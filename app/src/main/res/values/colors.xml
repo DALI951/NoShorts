@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="primary">#FF0000</color>
+    <color name="on_primary">#FFFFFF</color>
+    <color name="primary_container">#FFDAD6</color>
+    <color name="on_primary_container">#410002</color>
+    <color name="ic_launcher_background">#000000</color>
+    <color name="yt_dark">#0F0F0F</color>
+    <color name="yt_light">#FFFFFF</color>
+    <color name="yt_black">#000000</color>
+    <color name="yt_dark2">#121212</color>
+    <color name="yt_dark3">#1F1F1F</color>
+    <color name="yt_dark4">#282828</color>
+    <color name="status_ok">#4CAF50</color>
+    <color name="status_warn">#FFB300</color>
+    <color name="chip_text_dark">#FFFFFF</color>
+    <color name="chip_text_light">#111111</color>
+</resources>
