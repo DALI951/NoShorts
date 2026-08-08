@@ -5,6 +5,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -18,6 +19,8 @@ import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.SeekBar
 import android.widget.TextView
+import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import com.google.android.material.chip.Chip
 import com.google.android.material.switchmaterial.SwitchMaterial
@@ -26,6 +29,7 @@ import java.util.Locale
 class MainActivity : AppCompatActivity() {
 
     private var previewActive = false
+    private var captureRequestInFlight = false
     private val handler = Handler(Looper.getMainLooper())
 
     private lateinit var btnPreview: Button
@@ -53,6 +57,27 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private val captureLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        captureRequestInFlight = false
+        if (result.resultCode == RESULT_OK && result.data != null) {
+            ScreenCaptureService.start(this, result.resultCode, result.data!!)
+            Toast.makeText(this, "Color matching active", Toast.LENGTH_SHORT).show()
+        } else {
+            Prefs.adaptiveEnabled = false
+            Toast.makeText(this, "Screen capture denied — color matching off", Toast.LENGTH_SHORT).show()
+        }
+        updateStatus()
+    }
+
+    private fun requestScreenCapture() {
+        if (captureRequestInFlight) return
+        captureRequestInFlight = true
+        val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+        captureLauncher.launch(mpm.createScreenCaptureIntent())
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Prefs.init(this)
@@ -60,6 +85,8 @@ class MainActivity : AppCompatActivity() {
 
         val swOverlay = findViewById<SwitchMaterial>(R.id.swOverlay)
         val swClicker = findViewById<SwitchMaterial>(R.id.swClicker)
+        val swAdaptive = findViewById<SwitchMaterial>(R.id.swAdaptive)
+        val swPersist = findViewById<SwitchMaterial>(R.id.swPersist)
         val sbWidth = findViewById<SeekBar>(R.id.sbWidth)
         val sbHeight = findViewById<SeekBar>(R.id.sbHeight)
         val sbBottom = findViewById<SeekBar>(R.id.sbBottom)
@@ -73,6 +100,8 @@ class MainActivity : AppCompatActivity() {
         // ---- load saved values ----
         swOverlay.isChecked = Prefs.overlayEnabled
         swClicker.isChecked = Prefs.clickerEnabled
+        swAdaptive.isChecked = Prefs.adaptiveEnabled
+        swPersist.isChecked = Prefs.keepOutsideYouTube
         sbWidth.progress = Prefs.boxWidthDp.toInt().coerceIn(0, 140)
         sbHeight.progress = Prefs.boxHeightDp.toInt().coerceIn(0, 140)
         sbBottom.progress = Prefs.bottomOffsetDp.toInt().coerceIn(0, 60)
@@ -105,6 +134,21 @@ class MainActivity : AppCompatActivity() {
         }
 
         swClicker.setOnCheckedChangeListener { _, checked -> Prefs.clickerEnabled = checked }
+
+        swAdaptive.setOnCheckedChangeListener { _, checked ->
+            Prefs.adaptiveEnabled = checked
+            if (checked) {
+                if (!ScreenCaptureService.running) requestScreenCapture()
+            } else {
+                ScreenCaptureService.stop(this)
+            }
+            OverlayService.refresh()
+        }
+
+        swPersist.setOnCheckedChangeListener { _, checked ->
+            Prefs.keepOutsideYouTube = checked
+            OverlayService.refresh()
+        }
 
         // ---- sliders ----
         sbWidth.setOnSeekBarChangeListener(simpleSeek { Prefs.boxWidthDp = it.toFloat(); updateSliderLabels(); refreshBox() })
@@ -158,6 +202,9 @@ class MainActivity : AppCompatActivity() {
                 startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
             }
         }
+        findViewById<TextView>(R.id.btnCapture).setOnClickListener {
+            if (!ScreenCaptureService.running) requestScreenCapture()
+        }
 
         // ---- update card ----
         findViewById<Button>(R.id.btnUpdate).setOnClickListener {
@@ -198,6 +245,11 @@ class MainActivity : AppCompatActivity() {
         super.onResume()
         updateStatus()
         UpdateChecker.checkPendingRetry(this)
+        // If color matching is wanted but the capture service died (e.g. after reboot),
+        // ask for the permission again — one tap.
+        if (Prefs.adaptiveEnabled && !ScreenCaptureService.running && !captureRequestInFlight) {
+            requestScreenCapture()
+        }
     }
 
     override fun onDestroy() {
@@ -276,6 +328,7 @@ class MainActivity : AppCompatActivity() {
         val overlayOk = Settings.canDrawOverlays(this)
         val accessOk = isAccessibilityEnabled()
         val batteryOk = isBatteryExempt()
+        val captureOk = ScreenCaptureService.running
 
         findViewById<TextView>(R.id.statusOverlay).let { tv ->
             tv.text = if (overlayOk) "Overlay permission: OK" else "Overlay permission: needed"
@@ -288,6 +341,10 @@ class MainActivity : AppCompatActivity() {
         findViewById<TextView>(R.id.statusBattery).let { tv ->
             tv.text = if (batteryOk) "Battery: excluded from optimization" else "Battery: not excluded"
             tv.setTextColor(if (batteryOk) getColorCompat(R.color.status_ok) else getColorCompat(R.color.status_warn))
+        }
+        findViewById<TextView>(R.id.statusCapture).let { tv ->
+            tv.text = if (captureOk) "Screen capture: running" else "Screen capture: off"
+            tv.setTextColor(if (captureOk) getColorCompat(R.color.status_ok) else getColorCompat(R.color.status_warn))
         }
     }
 

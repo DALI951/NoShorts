@@ -46,4 +46,12 @@ object Prefs {
     var xShiftDp: Float
         get() = sp.getFloat("box_shift", 0f)
         set(v) = sp.edit().putFloat("box_shift", v).apply()
+
+    var adaptiveEnabled: Boolean
+        get() = sp.getBoolean("adaptive_enabled", true)
+        set(v) = sp.edit().putBoolean("adaptive_enabled", v).apply()
+
+    var keepOutsideYouTube: Boolean
+        get() = sp.getBoolean("keep_outside", true)
+        set(v) = sp.edit().putBoolean("keep_outside", v).apply()
 }

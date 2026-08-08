@@ -28,6 +28,7 @@ class ShortsWatchAccessibilityService : AccessibilityService() {
     private val handler = Handler(Looper.getMainLooper())
     private var ytForeground = false
     private var lastShowFewerAt = 0L
+    private var lastBarVisible = true
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -45,11 +46,50 @@ class ShortsWatchAccessibilityService : AccessibilityService() {
                 ytForeground = pkg == YT_PACKAGE
                 OverlayService.setYouTubeForeground(ytForeground)
                 Log.i(TAG, "Foreground: $pkg")
-                if (ytForeground) scheduleScan(1500)
+                if (ytForeground) {
+                    scheduleScan(1500)
+                    scheduleBarCheck(700)
+                }
             }
             AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> {
-                if (ytForeground && Prefs.clickerEnabled) scheduleScan(1500)
+                if (ytForeground) {
+                    scheduleScan(1500)
+                    scheduleBarCheck(300)
+                }
             }
+        }
+    }
+
+    /**
+     * YouTube hides its bottom bar on scroll-down. Detect whether the bar is
+     * visible by looking for its labels (Home/Shorts/Subscriptions/You) in the
+     * bottom 15% of the screen, and mirror that to the overlay box.
+     */
+    private fun scheduleBarCheck(delayMs: Long) {
+        handler.removeCallbacks(barCheckRunnable)
+        handler.postDelayed(barCheckRunnable, delayMs)
+    }
+
+    private val barCheckRunnable = Runnable {
+        if (!ytForeground) return@Runnable
+        try {
+            val root = rootInActiveWindow ?: return@Runnable
+            val screenH = resources.displayMetrics.heightPixels
+            val found = findTextNode(root) { n ->
+                val t = n.text?.toString() ?: ""
+                val b = Rect().also { n.getBoundsInScreen(it) }
+                n.isVisibleToUser && b.height() > 0 &&
+                    b.centerY() > screenH * 0.85 &&
+                    (t == "Home" || t == "Shorts" || t == "Subscriptions" || t == "You")
+            }
+            val visible = found != null
+            if (visible != lastBarVisible) {
+                lastBarVisible = visible
+                OverlayService.setBarVisible(visible)
+                Log.i(TAG, "Nav bar visible: $visible")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "bar check error: ${e.message}")
         }
     }
 

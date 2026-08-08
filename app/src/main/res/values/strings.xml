@@ -3,4 +3,6 @@
     <string name="app_name">NoShorts</string>
     <string name="accessibility_service_label">NoShorts — Shorts watcher</string>
     <string name="accessibility_service_description">Watches YouTube and automatically presses "Show fewer Shorts" / "Not interested" so Shorts stay hidden from your feed. Also tells the overlay box when YouTube is open.</string>
+    <string name="capture_notification_title">NoShorts</string>
+    <string name="capture_notification_text">Matching box color to your screen…</string>
 </resources>
