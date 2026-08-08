@@ -24,24 +24,33 @@ import android.view.Display
 
 /**
  * Captures the screen (MediaProjection) and samples the color of the YouTube
- * bottom-bar strip at 70% width — the same strip our overlay box sits on,
- * but away from the box itself (30%). Feeds the color to OverlayService so
- * the box always matches what is behind it.
+ * bottom-bar strip in the gaps between the 5 nav icons — the same strip our
+ * overlay box sits on. Feeds the color to OverlayService so the box always
+ * matches what is behind it.
  *
- * Sampling happens ~2.5x/second on a small scaled frame — cheap enough.
+ * Sampling happens ~3x/second on a small scaled frame — cheap enough.
+ * Only runs while the box is actually visible (nav bar shown).
  */
 class ScreenCaptureService : Service() {
 
     companion object {
         private const val TAG = "ScreenCapture"
         private const val SCALE = 0.35f
-        private const val INTERVAL_MS = 400L
+        private const val INTERVAL_MS = 300L
+        private const val BLEND = 0.45f
 
         var running = false
+            private set
+        var boxVisible = true
             private set
         private var lastSample: Int? = null
 
         fun sampledColor(): Int? = lastSample
+
+        /** Told by OverlayService whether the box is currently on screen. */
+        fun setBoxVisible(visible: Boolean) {
+            boxVisible = visible
+        }
 
         fun start(context: Context, resultCode: Int, data: Intent) {
             val i = Intent(context, ScreenCaptureService::class.java)
@@ -140,6 +149,10 @@ class ScreenCaptureService : Service() {
         }
         lastSampleAt = now
         try {
+            // Box hidden (nav bar hidden or YouTube closed) → the strip row
+            // shows video content, NOT the bar. Stop sampling and keep the
+            // last known bar color; it will converge again when the box shows.
+            if (!boxVisible) return
             val plane = image.planes[0]
             val buffer = plane.buffer
             val rowStride = plane.rowStride
@@ -150,37 +163,43 @@ class ScreenCaptureService : Service() {
             val d = resources.displayMetrics.density
             val wReal = resources.displayMetrics.widthPixels
             val hReal = resources.displayMetrics.heightPixels
-            // Sample the nav-bar strip at 70% width (Subscriptions area):
-            // same background as under our box (30%), but away from the box itself.
+            // Same vertical band as our box, but in the GAPS between the
+            // bottom-nav icons (20/40/60/80% width) where the bar is plain
+            // background — sampling ON an icon (e.g. Subscriptions at 70%)
+            // pollutes the color with the white glyph. Median kills any
+            // remaining icon pixels.
             val bottomOff = (Prefs.bottomOffsetDp * d).toInt()
             val boxH = (Prefs.boxHeightDp * d).toInt()
             val yReal = hReal - bottomOff - boxH / 2
-            val xReal = (wReal * 0.70f).toInt()
-            val sx = (xReal * SCALE).toInt().coerceIn(2, imgW - 3)
-            val sy = (yReal * SCALE).toInt().coerceIn(2, imgH - 3)
+            val sy = (yReal * SCALE).toInt().coerceIn(1, imgH - 2)
 
-            var r = 0
-            var g = 0
-            var b = 0
-            var n = 0
-            for (dy in -2..2) {
-                for (dx in -2..2) {
-                    val off = (sy + dy) * rowStride + (sx + dx) * pixelStride
-                    b += buffer.get(off).toInt() and 0xFF
-                    g += buffer.get(off + 1).toInt() and 0xFF
-                    r += buffer.get(off + 2).toInt() and 0xFF
-                    n++
-                }
+            val samples = arrayListOf<Int>()
+            for (fx in floatArrayOf(0.20f, 0.40f, 0.60f, 0.80f)) {
+                val sx = (wReal * fx * SCALE).toInt().coerceIn(1, imgW - 2)
+                val off = sy * rowStride + sx * pixelStride
+                val b = buffer.get(off).toInt() and 0xFF
+                val g = buffer.get(off + 1).toInt() and 0xFF
+                val r = buffer.get(off + 2).toInt() and 0xFF
+                samples.add((r shl 16) or (g shl 8) or b)
             }
-            val avg = ((r / n) shl 16) or ((g / n) shl 8) or (b / n)
+            val avg = median(samples)
             val prev = lastSample ?: avg
-            lastSample = blend(prev, avg, 0.35f)
+            lastSample = blend(prev, avg, BLEND)
             OverlayService.setAdaptiveColor(lastSample)
         } catch (e: Exception) {
             Log.w(TAG, "sample error: ${e.message}")
         } finally {
             image.close()
         }
+    }
+
+    /** Per-channel median — robust against the odd icon pixel. */
+    private fun median(list: List<Int>): Int {
+        val rs = list.map { (it shr 16) and 0xFF }.sorted()
+        val gs = list.map { (it shr 8) and 0xFF }.sorted()
+        val bs = list.map { it and 0xFF }.sorted()
+        val mid = list.size / 2
+        return (rs[mid] shl 16) or (gs[mid] shl 8) or bs[mid]
     }
 
     private fun blend(a: Int, b: Int, t: Float): Int {

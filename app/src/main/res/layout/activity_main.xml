@@ -227,6 +227,22 @@
                     android:layout_marginStart="16dp"
                     android:text="The box stays on screen everywhere, so Shorts never shows"
                     android:textAppearance="?attr/textAppearanceBodySmall" />
+
+                <com.google.android.material.switchmaterial.SwitchMaterial
+                    android:id="@+id/swAutoExit"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:text="Close Shorts automatically"
+                    android:textAppearance="?attr/textAppearanceBodyLarge" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="-4dp"
+                    android:layout_marginStart="16dp"
+                    android:text="If a Short opens anyway, it presses Back to leave"
+                    android:textAppearance="?attr/textAppearanceBodySmall" />
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
 

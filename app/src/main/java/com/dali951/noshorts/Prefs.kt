@@ -36,11 +36,11 @@ object Prefs {
         set(v) = sp.edit().putFloat("box_w", v).apply()
 
     var boxHeightDp: Float
-        get() = sp.getFloat("box_h", 88f)
+        get() = sp.getFloat("box_h", 96f)
         set(v) = sp.edit().putFloat("box_h", v).apply()
 
     var bottomOffsetDp: Float
-        get() = sp.getFloat("box_bottom", 10f)
+        get() = sp.getFloat("box_bottom", 0f)
         set(v) = sp.edit().putFloat("box_bottom", v).apply()
 
     var xShiftDp: Float
@@ -54,4 +54,8 @@ object Prefs {
     var keepOutsideYouTube: Boolean
         get() = sp.getBoolean("keep_outside", true)
         set(v) = sp.edit().putBoolean("keep_outside", v).apply()
+
+    var autoExitShorts: Boolean
+        get() = sp.getBoolean("auto_exit", true)
+        set(v) = sp.edit().putBoolean("auto_exit", v).apply()
 }

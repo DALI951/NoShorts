@@ -87,6 +87,7 @@ class MainActivity : AppCompatActivity() {
         val swClicker = findViewById<SwitchMaterial>(R.id.swClicker)
         val swAdaptive = findViewById<SwitchMaterial>(R.id.swAdaptive)
         val swPersist = findViewById<SwitchMaterial>(R.id.swPersist)
+        val swAutoExit = findViewById<SwitchMaterial>(R.id.swAutoExit)
         val sbWidth = findViewById<SeekBar>(R.id.sbWidth)
         val sbHeight = findViewById<SeekBar>(R.id.sbHeight)
         val sbBottom = findViewById<SeekBar>(R.id.sbBottom)
@@ -102,6 +103,7 @@ class MainActivity : AppCompatActivity() {
         swClicker.isChecked = Prefs.clickerEnabled
         swAdaptive.isChecked = Prefs.adaptiveEnabled
         swPersist.isChecked = Prefs.keepOutsideYouTube
+        swAutoExit.isChecked = Prefs.autoExitShorts
         sbWidth.progress = Prefs.boxWidthDp.toInt().coerceIn(0, 140)
         sbHeight.progress = Prefs.boxHeightDp.toInt().coerceIn(0, 140)
         sbBottom.progress = Prefs.bottomOffsetDp.toInt().coerceIn(0, 60)
@@ -149,6 +151,8 @@ class MainActivity : AppCompatActivity() {
             Prefs.keepOutsideYouTube = checked
             OverlayService.refresh()
         }
+
+        swAutoExit.setOnCheckedChangeListener { _, checked -> Prefs.autoExitShorts = checked }
 
         // ---- sliders ----
         sbWidth.setOnSeekBarChangeListener(simpleSeek { Prefs.boxWidthDp = it.toFloat(); updateSliderLabels(); refreshBox() })

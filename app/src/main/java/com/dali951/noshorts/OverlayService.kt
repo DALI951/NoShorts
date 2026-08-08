@@ -120,7 +120,9 @@ class OverlayService : Service() {
     private fun recompute() {
         val v = box ?: return
         val show = shouldShow() || previewMode
-
+        // Let the color sampler know whether the strip it reads is the real
+        // nav bar or video content (bar hidden → box hidden → no sampling).
+        ScreenCaptureService.setBoxVisible(show)
         if (!show) {
             v.visibility = View.GONE
             return

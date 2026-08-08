@@ -10,12 +10,14 @@ import android.view.accessibility.AccessibilityNodeInfo
 import android.widget.Toast
 
 /**
- * Two jobs:
+ * Three jobs:
  * 1) Tell OverlayService when YouTube is in the foreground (show/hide the box).
  * 2) Auto-click the "More" (3-dot) button of the Shorts section in the Home feed,
  *    then click "Show fewer Shorts" — so the feed gets cleaned without user action.
+ * 3) If a Short opens anyway (player or Shorts tab), press Back to leave Shorts.
  *
- * Cooldown: the click only runs at most once per 5 minutes to avoid loops.
+ * Cooldowns: the click only runs at most once per 5 minutes, the auto-exit
+ * once per 45 seconds (up to 3 backs per detection) — to avoid loops.
  */
 class ShortsWatchAccessibilityService : AccessibilityService() {
 
@@ -23,12 +25,15 @@ class ShortsWatchAccessibilityService : AccessibilityService() {
         private const val TAG = "ShortsWatch"
         private const val YT_PACKAGE = "com.google.android.youtube"
         private const val COOLDOWN_MS = 5 * 60 * 1000L
+        private const val EXIT_COOLDOWN_MS = 45 * 1000L
+        private const val MAX_EXIT_BACKS = 3
     }
 
     private val handler = Handler(Looper.getMainLooper())
     private var ytForeground = false
     private var lastShowFewerAt = 0L
     private var lastBarVisible = true
+    private var lastExitAt = 0L
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -49,12 +54,14 @@ class ShortsWatchAccessibilityService : AccessibilityService() {
                 if (ytForeground) {
                     scheduleScan(1500)
                     scheduleBarCheck(700)
+                    scheduleExitCheck(1500)
                 }
             }
             AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> {
                 if (ytForeground) {
                     scheduleScan(1500)
                     scheduleBarCheck(300)
+                    scheduleExitCheck(1800)
                 }
             }
         }
@@ -98,6 +105,62 @@ class ShortsWatchAccessibilityService : AccessibilityService() {
         handler.postDelayed(scanRunnable, delayMs)
     }
 
+    private fun scheduleExitCheck(delayMs: Long) {
+        handler.postDelayed(exitRunnable, delayMs)
+    }
+
+    /**
+     * If a Short opens anyway (the Shorts player, or the Shorts tab), press
+     * Back to leave Shorts — that's the whole point of the app.
+     */
+    private val exitRunnable = Runnable {
+        if (!ytForeground || !Prefs.autoExitShorts) return@Runnable
+        val now = System.currentTimeMillis()
+        if (now - lastExitAt < EXIT_COOLDOWN_MS) return@Runnable
+        try {
+            val root = rootInActiveWindow ?: return@Runnable
+            val shorts = findShortsAtTop(root) ?: return@Runnable
+            Log.i(TAG, "Shorts open — pressing Back")
+            performGlobalAction(GLOBAL_ACTION_BACK)
+            lastExitAt = now
+            var backs = 1
+            // After the back animation, if we're still in Shorts, back again.
+            // (Player → its feed grid → previous tab, max 3 total.)
+            for (round in 1..(MAX_EXIT_BACKS - 1)) {
+                handler.postDelayed({
+                    try {
+                        if (!ytForeground || backs >= MAX_EXIT_BACKS) return@postDelayed
+                        val r = rootInActiveWindow ?: return@postDelayed
+                        if (findShortsAtTop(r) != null) {
+                            performGlobalAction(GLOBAL_ACTION_BACK)
+                            backs++
+                            Log.i(TAG, "Still in Shorts — Back again ($backs/$MAX_EXIT_BACKS)")
+                        }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "exit re-check error: ${e.message}")
+                    }
+                }, 1400L * round)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "exit error: ${e.message}")
+        }
+    }
+
+    /** "Shorts" title near the top of the screen = Shorts player or Shorts tab. */
+    private fun findShortsAtTop(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        val screenH = resources.displayMetrics.heightPixels
+        return findTextNode(root) { n ->
+            if (!n.isVisibleToUser) return@findTextNode false
+            val t = n.text?.toString() ?: ""
+            val cd = n.contentDescription?.toString() ?: ""
+            val isShorts = t.equals("Shorts", ignoreCase = true) ||
+                (cd.isNotEmpty() && cd.equals("Shorts", ignoreCase = true))
+            if (!isShorts) return@findTextNode false
+            val b = Rect().also { n.getBoundsInScreen(it) }
+            b.centerY() < screenH * 0.30 && b.height() > 0
+        }
+    }
+
     private val scanRunnable = Runnable {
         if (!ytForeground || !Prefs.clickerEnabled) return@Runnable
 
@@ -139,8 +202,7 @@ class ShortsWatchAccessibilityService : AccessibilityService() {
     }
 
     /** Finds a "Shorts" text node that is NOT the bottom nav tab label. */
-    private fun findShortsHeader(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
-        val screenH = resources.displayMetrics.heightPixels
+    private fun findShortsHeader(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {        val screenH = resources.displayMetrics.heightPixels
         return findTextNode(root) { n ->
             val t = n.text?.toString() ?: return@findTextNode false
             val cd = n.contentDescription?.toString() ?: ""
