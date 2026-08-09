@@ -51,8 +51,10 @@ object Prefs {
         get() = sp.getBoolean("adaptive_enabled", true)
         set(v) = sp.edit().putBoolean("adaptive_enabled", v).apply()
 
+    // Kept for compatibility, no longer used: the box only shows inside YouTube
+    // over the Shorts icon (v1.2+). Old installs may still have true saved.
     var keepOutsideYouTube: Boolean
-        get() = sp.getBoolean("keep_outside", true)
+        get() = sp.getBoolean("keep_outside", false)
         set(v) = sp.edit().putBoolean("keep_outside", v).apply()
 
     var autoExitShorts: Boolean

@@ -213,22 +213,6 @@
                     android:textAppearance="?attr/textAppearanceBodySmall" />
 
                 <com.google.android.material.switchmaterial.SwitchMaterial
-                    android:id="@+id/swPersist"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
-                    android:text="Keep box after closing YouTube"
-                    android:textAppearance="?attr/textAppearanceBodyLarge" />
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="-4dp"
-                    android:layout_marginStart="16dp"
-                    android:text="The box stays on screen everywhere, so Shorts never shows"
-                    android:textAppearance="?attr/textAppearanceBodySmall" />
-
-                <com.google.android.material.switchmaterial.SwitchMaterial
                     android:id="@+id/swAutoExit"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
@@ -601,6 +585,13 @@
                     android:layout_height="wrap_content"
                     android:layout_marginTop="4dp"
                     android:text="Version 1.0.0"
+                    android:textAppearance="?attr/textAppearanceBodySmall" />
+
+                <TextView
+                    android:id="@+id/txtLatest"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Latest: unknown — tap Check for updates"
                     android:textAppearance="?attr/textAppearanceBodySmall" />
 
                 <LinearLayout

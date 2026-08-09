@@ -42,6 +42,10 @@ object UpdateChecker {
         Handler(Looper.getMainLooper()).postDelayed({ check(activity, force = false) }, 2000)
     }
 
+    /** Latest version known from the last successful check ("" if never). */
+    fun cachedLatestVersion(ctx: Context): String =
+        Prefs.prefs(ctx).getString(KEY_CACHED_VERSION, "") ?: ""
+
     /** After "Later", retry when the app comes back and 10 minutes passed. */
     fun checkPendingRetry(activity: Activity) {
         val prefs = Prefs.prefs(activity)
@@ -58,7 +62,7 @@ object UpdateChecker {
         activity.runOnUiThread { showUpdateDialog(activity, version, url, body) }
     }
 
-    fun check(activity: Activity, force: Boolean) {
+    fun check(activity: Activity, force: Boolean, onDone: ((String?) -> Unit)? = null) {
         val prefs = Prefs.prefs(activity)
         if (!force) {
             val last = prefs.getLong(KEY_LAST_CHECK, 0)
@@ -66,22 +70,39 @@ object UpdateChecker {
         }
         Thread {
             try {
-                val info = fetchLatest() ?: return@Thread
+                val info = fetchLatest() ?: throw RuntimeException("no release")
                 prefs.edit()
                     .putLong(KEY_LAST_CHECK, System.currentTimeMillis())
                     .putString(KEY_CACHED_VERSION, info.version)
                     .putString(KEY_CACHED_BODY, info.changelog)
                     .apply()
 
-                if (compareVersions(info.version, BuildConfig.VERSION_NAME) <= 0) return@Thread
-                if (!force && prefs.getString(KEY_DISMISSED, null) == info.version) return@Thread
+                if (compareVersions(info.version, BuildConfig.VERSION_NAME) <= 0) {
+                    // Already up to date — only say so when the user asked (button).
+                    if (force) toast(activity, "You're up to date (v${info.version})")
+                    onDone?.invoke(info.version)
+                    return@Thread
+                }
+                if (!force && prefs.getString(KEY_DISMISSED, null) == info.version) {
+                    onDone?.invoke(info.version)
+                    return@Thread
+                }
                 val apkUrl = info.apkUrl ?: return@Thread
 
+                onDone?.invoke(info.version)
                 activity.runOnUiThread { showUpdateDialog(activity, info.version, apkUrl, info.changelog) }
             } catch (e: Exception) {
                 Log.w(TAG, "check failed: ${e.message}")
+                if (force) toast(activity, "Could not check updates — check your internet")
+                onDone?.invoke(null)
             }
         }.start()
+    }
+
+    private fun toast(activity: Activity, msg: String) {
+        activity.runOnUiThread {
+            Toast.makeText(activity, msg, Toast.LENGTH_SHORT).show()
+        }
     }
 
     /** "What's new" — latest release changelog, cached or freshly fetched. */

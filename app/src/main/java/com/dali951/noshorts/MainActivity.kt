@@ -86,7 +86,6 @@ class MainActivity : AppCompatActivity() {
         val swOverlay = findViewById<SwitchMaterial>(R.id.swOverlay)
         val swClicker = findViewById<SwitchMaterial>(R.id.swClicker)
         val swAdaptive = findViewById<SwitchMaterial>(R.id.swAdaptive)
-        val swPersist = findViewById<SwitchMaterial>(R.id.swPersist)
         val swAutoExit = findViewById<SwitchMaterial>(R.id.swAutoExit)
         val sbWidth = findViewById<SeekBar>(R.id.sbWidth)
         val sbHeight = findViewById<SeekBar>(R.id.sbHeight)
@@ -97,19 +96,18 @@ class MainActivity : AppCompatActivity() {
         dlProgress = findViewById(R.id.dlProgress)
         dlText = findViewById(R.id.dlText)
         val txtVersion = findViewById<TextView>(R.id.txtVersion)
+        val txtLatest = findViewById<TextView>(R.id.txtLatest)
 
         // ---- load saved values ----
         swOverlay.isChecked = Prefs.overlayEnabled
         swClicker.isChecked = Prefs.clickerEnabled
         swAdaptive.isChecked = Prefs.adaptiveEnabled
-        swPersist.isChecked = Prefs.keepOutsideYouTube
         swAutoExit.isChecked = Prefs.autoExitShorts
         sbWidth.progress = Prefs.boxWidthDp.toInt().coerceIn(0, 140)
         sbHeight.progress = Prefs.boxHeightDp.toInt().coerceIn(0, 140)
         sbBottom.progress = Prefs.bottomOffsetDp.toInt().coerceIn(0, 60)
         sbShift.progress = (Prefs.xShiftDp.toInt() + 120).coerceIn(0, 240)
         updateSliderLabels()
-        txtVersion.text = "Version ${BuildConfig.VERSION_NAME}"
 
         // ---- chips ----
         selectChipForColor(Prefs.boxColor)
@@ -144,11 +142,6 @@ class MainActivity : AppCompatActivity() {
             } else {
                 ScreenCaptureService.stop(this)
             }
-            OverlayService.refresh()
-        }
-
-        swPersist.setOnCheckedChangeListener { _, checked ->
-            Prefs.keepOutsideYouTube = checked
             OverlayService.refresh()
         }
 
@@ -211,8 +204,10 @@ class MainActivity : AppCompatActivity() {
         }
 
         // ---- update card ----
+        txtVersion.text = "Version ${BuildConfig.VERSION_NAME}"
+        updateLatestLabel(null)
         findViewById<Button>(R.id.btnUpdate).setOnClickListener {
-            UpdateChecker.check(this, force = true)
+            UpdateChecker.check(this, force = true) { latest -> updateLatestLabel(latest) }
         }
         findViewById<TextView>(R.id.btnWhatsNew).setOnClickListener {
             UpdateChecker.showWhatsNew(this)
@@ -248,7 +243,12 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         updateStatus()
+        updateLatestLabel(null)
         UpdateChecker.checkPendingRetry(this)
+        // Restart the overlay if it was killed while the box should be active.
+        if (Prefs.overlayEnabled && !OverlayService.isRunning) {
+            startService(Intent(this, OverlayService::class.java))
+        }
         // If color matching is wanted but the capture service died (e.g. after reboot),
         // ask for the permission again — one tap.
         if (Prefs.adaptiveEnabled && !ScreenCaptureService.running && !captureRequestInFlight) {
@@ -298,8 +298,14 @@ class MainActivity : AppCompatActivity() {
         override fun onStopTrackingTouch(seekBar: SeekBar?) {}
     }
 
+    private fun updateLatestLabel(latest: String?) {
+        val tv = findViewById<TextView>(R.id.txtLatest)
+        val v = latest ?: UpdateChecker.cachedLatestVersion(this)
+        tv.text = if (v.isEmpty()) "Latest: unknown — tap Check for updates" else "Latest: v$v"
+    }
+
     private fun refreshBox() {
-        OverlayService.setYouTubeForeground(true)
+        OverlayService.refresh()
     }
 
     private fun updateSliderLabels() {

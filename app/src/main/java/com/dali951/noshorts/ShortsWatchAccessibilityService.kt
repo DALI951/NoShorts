@@ -1,6 +1,7 @@
 package com.dali951.noshorts
 
 import android.accessibilityservice.AccessibilityService
+import android.content.Intent
 import android.graphics.Rect
 import android.os.Handler
 import android.os.Looper
@@ -11,10 +12,13 @@ import android.widget.Toast
 
 /**
  * Three jobs:
- * 1) Tell OverlayService when YouTube is in the foreground (show/hide the box).
+ * 1) Track the REAL "Shorts" tab in YouTube's bottom bar and feed its bounds
+ *    to OverlayService — the box follows the icon and exists only while the
+ *    icon is visible. Also auto-starts the overlay when the service connects.
  * 2) Auto-click the "More" (3-dot) button of the Shorts section in the Home feed,
  *    then click "Show fewer Shorts" — so the feed gets cleaned without user action.
- * 3) If a Short opens anyway (player or Shorts tab), press Back to leave Shorts.
+ * 3) If a Short opens anyway (the Shorts player, or the Shorts tab), press
+ *    Back to leave Shorts.
  *
  * Cooldowns: the click only runs at most once per 5 minutes, the auto-exit
  * once per 45 seconds (up to 3 backs per detection) — to avoid loops.
@@ -27,17 +31,26 @@ class ShortsWatchAccessibilityService : AccessibilityService() {
         private const val COOLDOWN_MS = 5 * 60 * 1000L
         private const val EXIT_COOLDOWN_MS = 45 * 1000L
         private const val MAX_EXIT_BACKS = 3
+        private const val TAB_POLL_MS = 300L
     }
 
     private val handler = Handler(Looper.getMainLooper())
     private var ytForeground = false
     private var lastShowFewerAt = 0L
-    private var lastBarVisible = true
     private var lastExitAt = 0L
+    private var lastShortsRect: Rect? = null
 
     override fun onServiceConnected() {
         super.onServiceConnected()
         Prefs.init(this)
+        // Auto-start the overlay so the box works without opening the app first.
+        if (Prefs.overlayEnabled) {
+            try {
+                startService(Intent(this, OverlayService::class.java))
+            } catch (e: Exception) {
+                Log.w(TAG, "overlay auto-start failed: ${e.message}")
+            }
+        }
         Log.i(TAG, "Service connected")
     }
 
@@ -52,15 +65,16 @@ class ShortsWatchAccessibilityService : AccessibilityService() {
                 OverlayService.setYouTubeForeground(ytForeground)
                 Log.i(TAG, "Foreground: $pkg")
                 if (ytForeground) {
+                    startTabPolling()
                     scheduleScan(1500)
-                    scheduleBarCheck(700)
                     scheduleExitCheck(1500)
+                } else {
+                    stopTabPolling()
                 }
             }
             AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> {
                 if (ytForeground) {
                     scheduleScan(1500)
-                    scheduleBarCheck(300)
                     scheduleExitCheck(1800)
                 }
             }
@@ -68,36 +82,71 @@ class ShortsWatchAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * YouTube hides its bottom bar on scroll-down. Detect whether the bar is
-     * visible by looking for its labels (Home/Shorts/Subscriptions/You) in the
-     * bottom 15% of the screen, and mirror that to the overlay box.
+     * Poll the Shorts tab every ~300ms while YouTube is foreground. This is
+     * more reliable than event-driven checks: the box follows the icon's real
+     * position and disappears the moment the bar hides or YouTube closes —
+     * even if YouTube stops sending accessibility events.
      */
-    private fun scheduleBarCheck(delayMs: Long) {
-        handler.removeCallbacks(barCheckRunnable)
-        handler.postDelayed(barCheckRunnable, delayMs)
+    private fun startTabPolling() {
+        handler.removeCallbacks(tabPollRunnable)
+        handler.post(tabPollRunnable)
     }
 
-    private val barCheckRunnable = Runnable {
+    private fun stopTabPolling() {
+        handler.removeCallbacks(tabPollRunnable)
+        if (lastShortsRect != null) {
+            lastShortsRect = null
+            OverlayService.setShortsTabRect(null)
+        }
+    }
+
+    private val tabPollRunnable = Runnable {
         if (!ytForeground) return@Runnable
         try {
-            val root = rootInActiveWindow ?: return@Runnable
-            val screenH = resources.displayMetrics.heightPixels
-            val found = findTextNode(root) { n ->
-                val t = n.text?.toString() ?: ""
-                val b = Rect().also { n.getBoundsInScreen(it) }
-                n.isVisibleToUser && b.height() > 0 &&
-                    b.centerY() > screenH * 0.85 &&
-                    (t == "Home" || t == "Shorts" || t == "Subscriptions" || t == "You")
+            val root = rootInActiveWindow
+            val rect = if (root != null) {
+                findShortsTab(root)?.let { n ->
+                    Rect().also { n.getBoundsInScreen(it) }
+                }
+            } else {
+                null
             }
-            val visible = found != null
-            if (visible != lastBarVisible) {
-                lastBarVisible = visible
-                OverlayService.setBarVisible(visible)
-                Log.i(TAG, "Nav bar visible: $visible")
+            if (rect != lastShortsRect) {
+                lastShortsRect = rect
+                OverlayService.setShortsTabRect(rect)
+                Log.i(TAG, "Shorts tab bounds: $rect")
             }
         } catch (e: Exception) {
-            Log.w(TAG, "bar check error: ${e.message}")
+            Log.w(TAG, "tab poll error: ${e.message}")
         }
+        handler.postDelayed(tabPollRunnable, TAB_POLL_MS)
+    }
+
+    /**
+     * The Shorts TAB of the bottom nav: a visible node labeled "Shorts" whose
+     * center sits in the bottom 15% of the screen (the bar area). A "Shorts"
+     * section header in the feed lives mid-screen, so it is excluded.
+     */
+    private fun findShortsTab(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        val screenH = resources.displayMetrics.heightPixels
+        val match: (AccessibilityNodeInfo) -> Boolean = { n ->
+            if (!n.isVisibleToUser) return@match false
+            val t = n.text?.toString() ?: ""
+            val cd = n.contentDescription?.toString() ?: ""
+            val isShorts = t.equals("Shorts", ignoreCase = true) ||
+                cd.equals("Shorts", ignoreCase = true)
+            if (!isShorts) return@match false
+            val b = Rect().also { n.getBoundsInScreen(it) }
+            b.width() > 0 && b.height() > 0 && b.centerY() > screenH * 0.85
+        }
+
+        // Native search is fast; fall back to DFS if it returns nothing.
+        val found = root.findAccessibilityNodeInfosByText("Shorts")
+        if (!found.isNullOrEmpty()) {
+            val first = found.firstOrNull { match(it) }
+            if (first != null) return first
+        }
+        return findTextNode(root, match)
     }
 
     private fun scheduleScan(delayMs: Long) {
@@ -202,7 +251,8 @@ class ShortsWatchAccessibilityService : AccessibilityService() {
     }
 
     /** Finds a "Shorts" text node that is NOT the bottom nav tab label. */
-    private fun findShortsHeader(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {        val screenH = resources.displayMetrics.heightPixels
+    private fun findShortsHeader(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        val screenH = resources.displayMetrics.heightPixels
         return findTextNode(root) { n ->
             val t = n.text?.toString() ?: return@findTextNode false
             val cd = n.contentDescription?.toString() ?: ""
@@ -221,14 +271,13 @@ class ShortsWatchAccessibilityService : AccessibilityService() {
      */
     private fun findMoreButton(root: AccessibilityNodeInfo, header: AccessibilityNodeInfo): AccessibilityNodeInfo? {
         val hb = Rect().also { header.getBoundsInScreen(it) }
-        val found = findTextNode(root) { n ->
+        return findTextNode(root) { n ->
             if (!n.isClickable || !n.isVisibleToUser) return@findTextNode false
             val b = Rect().also { n.getBoundsInScreen(it) }
             Math.abs(b.centerY() - hb.centerY()) < 120 &&
                 b.left > hb.centerX() &&
                 b.width() < 200 && b.height() < 200
         }
-        return found
     }
 
     /** DFS over the accessibility tree; returns the first node matching [match]. */
@@ -255,6 +304,7 @@ class ShortsWatchAccessibilityService : AccessibilityService() {
 
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
+        stopTabPolling()
         OverlayService.setYouTubeForeground(false)
         super.onDestroy()
     }
