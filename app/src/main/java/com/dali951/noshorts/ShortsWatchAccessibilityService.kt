@@ -100,7 +100,7 @@ class ShortsWatchAccessibilityService : AccessibilityService() {
         }
     }
 
-    private val tabPollRunnable = Runnable {
+    private val tabPollRunnable: Runnable = Runnable {
         if (!ytForeground) return@Runnable
         try {
             val root = rootInActiveWindow
@@ -130,14 +130,13 @@ class ShortsWatchAccessibilityService : AccessibilityService() {
     private fun findShortsTab(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
         val screenH = resources.displayMetrics.heightPixels
         val match: (AccessibilityNodeInfo) -> Boolean = { n ->
-            if (!n.isVisibleToUser) return@match false
             val t = n.text?.toString() ?: ""
             val cd = n.contentDescription?.toString() ?: ""
             val isShorts = t.equals("Shorts", ignoreCase = true) ||
                 cd.equals("Shorts", ignoreCase = true)
-            if (!isShorts) return@match false
             val b = Rect().also { n.getBoundsInScreen(it) }
-            b.width() > 0 && b.height() > 0 && b.centerY() > screenH * 0.85
+            n.isVisibleToUser && isShorts &&
+                b.width() > 0 && b.height() > 0 && b.centerY() > screenH * 0.85
         }
 
         // Native search is fast; fall back to DFS if it returns nothing.
