@@ -209,7 +209,7 @@
                     android:layout_height="wrap_content"
                     android:layout_marginTop="-4dp"
                     android:layout_marginStart="16dp"
-                    android:text="Samples the screen so the box always blends in (needs screen capture permission)"
+                    android:text="Reads the screen via the accessibility service so the box always blends in — no screen-capture permission"
                     android:textAppearance="?attr/textAppearanceBodySmall" />
 
                 <com.google.android.material.switchmaterial.SwitchMaterial
@@ -545,7 +545,7 @@
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
-                        android:text="Screen capture: …"
+                        android:text="Color match (a11y): …"
                         android:textAppearance="?attr/textAppearanceBodyMedium" />
 
                     <TextView
@@ -553,7 +553,7 @@
                         style="@style/Widget.Material3.Button.TextButton"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:text="Fix" />
+                        android:text="Open a11y settings" />
                 </LinearLayout>
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>

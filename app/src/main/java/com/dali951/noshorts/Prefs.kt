@@ -60,4 +60,9 @@ object Prefs {
     var autoExitShorts: Boolean
         get() = sp.getBoolean("auto_exit", true)
         set(v) = sp.edit().putBoolean("auto_exit", v).apply()
+
+    /** True once the first-run permission walkthrough has been completed. */
+    var setupDone: Boolean
+        get() = sp.getBoolean("setup_done", false)
+        set(v) = sp.edit().putBoolean("setup_done", v).apply()
 }

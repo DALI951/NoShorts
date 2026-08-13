@@ -1,15 +1,20 @@
 package com.dali951.noshorts
 
 import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.AccessibilityServiceInfo
 import android.content.Intent
+import android.graphics.Bitmap
 import android.graphics.Rect
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import android.view.Display
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.widget.Toast
 import java.util.ArrayDeque
+import java.util.concurrent.Executor
 
 /**
  * Three jobs:
@@ -64,6 +69,8 @@ class ShortsWatchAccessibilityService : AccessibilityService() {
     private var lastShortsRect: Rect? = null
     private var suppressedByPlayer = false
     private var lastHeartbeatAt = 0L
+    private var lastSampleAt = 0L
+    private var lastSample: Int? = null
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -71,14 +78,9 @@ class ShortsWatchAccessibilityService : AccessibilityService() {
         // Auto-start the overlay so the box works without opening the app first.
         if (Prefs.overlayEnabled) {
             try {
-                startForegroundService(Intent(this, OverlayService::class.java))
+                startService(Intent(this, OverlayService::class.java))
             } catch (e: Exception) {
-                Log.w(TAG, "overlay FGS start failed: ${e.message}")
-                try {
-                    startService(Intent(this, OverlayService::class.java))
-                } catch (e2: Exception) {
-                    Log.w(TAG, "overlay start failed: ${e2.message}")
-                }
+                Log.w(TAG, "overlay start failed: ${e.message}")
             }
         }
         // The service may have restarted while YouTube was already open —
@@ -164,6 +166,7 @@ class ShortsWatchAccessibilityService : AccessibilityService() {
                         null
                     }
                     updateShortsRect(rect)
+                    maybeSampleColor()
                     val now = System.currentTimeMillis()
                     if (now - lastHeartbeatAt > 5000) {
                         lastHeartbeatAt = now
@@ -180,6 +183,96 @@ class ShortsWatchAccessibilityService : AccessibilityService() {
             }
             handler.postDelayed(this, TAB_POLL_MS)
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Adaptive color (replaces the old screen-capture service)
+    // ------------------------------------------------------------------
+    //
+    // The old ScreenCaptureService used MediaProjection, which pops the
+    // annoying "start screen sharing" consent dialog. Instead we read the
+    // screen through the accessibility service's takeScreenshot() — no
+    // dialog, no extra permission, only works while the a11y service is on
+    // (which it always is, it's the core of the app).
+
+    /** Throttled (~1.5s) screenshot sampler; feeds OverlayService. */
+    private fun maybeSampleColor() {
+        if (!Prefs.adaptiveEnabled || !OverlayService.boxVisible) return
+        // takeScreenshot(displayId, …) with ScreenshotResult.getHardwareBuffer()
+        // is the only path on Android 16 (getBitmap / the old overload are gone).
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) return
+        val info = serviceInfo ?: return
+        if (info.capabilities and AccessibilityServiceInfo.CAPABILITY_CAN_TAKE_SCREENSHOT == 0) return
+        val now = System.currentTimeMillis()
+        if (now - lastSampleAt < 1500) return
+        lastSampleAt = now
+        try {
+            takeScreenshot(
+                Display.DEFAULT_DISPLAY,
+                Executor { r -> r.run() },
+                object : TakeScreenshotCallback {
+                    override fun onSuccess(screenshot: ScreenshotResult) {
+                        processScreenshot(screenshot)
+                    }
+
+                    override fun onFailure(errorCode: Int) {
+                        Log.w(TAG, "screenshot failed: $errorCode")
+                    }
+                }
+            )
+        } catch (e: Exception) {
+            Log.w(TAG, "takeScreenshot error: ${e.message}")
+        }
+    }
+
+    private fun processScreenshot(s: ScreenshotResult) {
+        try {
+            val hb = s.hardwareBuffer
+            val wrapped = Bitmap.wrapHardwareBuffer(hb, null)
+            hb.close()
+            val bmp = wrapped?.copy(Bitmap.Config.ARGB_8888, false) ?: return
+            try {
+                val w = bmp.width
+                val h = bmp.height
+                val d = resources.displayMetrics.density
+                val bottomOff = (Prefs.bottomOffsetDp * d).toInt()
+                val boxH = (Prefs.boxHeightDp * d).toInt()
+                val y = (h - bottomOff - boxH / 2).coerceIn(0, h - 1)
+                val samples = arrayListOf<Int>()
+                // Same band as the box, but in the GAPS between the bottom-nav
+                // icons (15/42/65/85% width) where the bar is plain background.
+                for (fx in floatArrayOf(0.15f, 0.42f, 0.65f, 0.85f)) {
+                    val x = (w * fx).toInt().coerceIn(0, w - 1)
+                    samples.add(bmp.getPixel(x, y))
+                }
+                val avg = median(samples)
+                val prev = lastSample ?: avg
+                lastSample = blend(prev, avg, 0.45f)
+                OverlayService.setAdaptiveColor(lastSample)
+            } finally {
+                bmp.recycle()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "sample error: ${e.message}")
+        }
+    }
+
+    /** Per-channel median — robust against the odd icon pixel. */
+    private fun median(list: List<Int>): Int {
+        val rs = list.map { (it shr 16) and 0xFF }.sorted()
+        val gs = list.map { (it shr 8) and 0xFF }.sorted()
+        val bs = list.map { it and 0xFF }.sorted()
+        val mid = list.size / 2
+        return (rs[mid] shl 16) or (gs[mid] shl 8) or bs[mid]
+    }
+
+    private fun blend(a: Int, b: Int, t: Float): Int {
+        fun ch(shift: Int): Int {
+            val av = (a shr shift) and 0xFF
+            val bv = (b shr shift) and 0xFF
+            return (av + ((bv - av) * t).toInt()).coerceIn(0, 255)
+        }
+        return (ch(16) shl 16) or (ch(8) shl 8) or ch(0)
     }
 
     /** Pushes the rect to the overlay only when it actually changed. */

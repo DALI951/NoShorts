@@ -1,18 +1,17 @@
 package com.dali951.noshorts
 
+import android.app.AlertDialog
 import android.app.DownloadManager
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
-import android.os.SystemClock
 import android.provider.Settings
 import android.view.View
 import android.widget.Button
@@ -21,7 +20,6 @@ import android.widget.ProgressBar
 import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import com.google.android.material.chip.Chip
 import com.google.android.material.switchmaterial.SwitchMaterial
@@ -30,8 +28,7 @@ import java.util.Locale
 class MainActivity : AppCompatActivity() {
 
     private var previewActive = false
-    private var captureRequestInFlight = false
-    private var lastCaptureRequestAt = 0L
+    private var setupShownThisSession = false
     private val handler = Handler(Looper.getMainLooper())
 
     private lateinit var btnPreview: Button
@@ -57,28 +54,6 @@ class MainActivity : AppCompatActivity() {
                 updateDownloadBanner()
             }
         }
-    }
-
-    private val captureLauncher = registerForActivityResult(
-        ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        captureRequestInFlight = false
-        if (result.resultCode == RESULT_OK && result.data != null) {
-            ScreenCaptureService.start(this, result.resultCode, result.data!!)
-            Toast.makeText(this, "Color matching active", Toast.LENGTH_SHORT).show()
-        } else {
-            Prefs.adaptiveEnabled = false
-            Toast.makeText(this, "Screen capture denied — color matching off", Toast.LENGTH_SHORT).show()
-        }
-        updateStatus()
-    }
-
-    private fun requestScreenCapture() {
-        if (captureRequestInFlight) return
-        captureRequestInFlight = true
-        lastCaptureRequestAt = SystemClock.elapsedRealtime()
-        val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-        captureLauncher.launch(mpm.createScreenCaptureIntent())
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -129,7 +104,7 @@ class MainActivity : AppCompatActivity() {
         swOverlay.setOnCheckedChangeListener { _, checked ->
             Prefs.overlayEnabled = checked
             if (checked) {
-                startForegroundService(Intent(this, OverlayService::class.java))
+                startService(Intent(this, OverlayService::class.java))
             } else {
                 OverlayService.setPreview(false)
                 stopService(Intent(this, OverlayService::class.java))
@@ -140,11 +115,6 @@ class MainActivity : AppCompatActivity() {
 
         swAdaptive.setOnCheckedChangeListener { _, checked ->
             Prefs.adaptiveEnabled = checked
-            if (checked) {
-                if (!ScreenCaptureService.running) requestScreenCapture()
-            } else {
-                ScreenCaptureService.stop(this)
-            }
             OverlayService.refresh()
         }
 
@@ -171,7 +141,7 @@ class MainActivity : AppCompatActivity() {
                     )
                     return@setOnClickListener
                 }
-                startForegroundService(Intent(this, OverlayService::class.java))
+                startService(Intent(this, OverlayService::class.java))
                 OverlayService.setPreview(true)
                 previewActive = true
                 btnPreview.text = "Stop preview"
@@ -203,7 +173,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
         findViewById<TextView>(R.id.btnCapture).setOnClickListener {
-            if (!ScreenCaptureService.running) requestScreenCapture()
+            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
         }
 
         // ---- update card ----
@@ -250,16 +220,69 @@ class MainActivity : AppCompatActivity() {
         UpdateChecker.checkPendingRetry(this)
         // Restart the overlay if it was killed while the box should be active.
         if (Prefs.overlayEnabled && !OverlayService.isRunning) {
-            startForegroundService(Intent(this, OverlayService::class.java))
+            try {
+                startService(Intent(this, OverlayService::class.java))
+            } catch (e: Exception) {
+                // ignore
+            }
         }
-        // If color matching is wanted but the capture service died (e.g. after reboot),
-        // ask for the permission again — one tap. The 3s grace avoids double-asking
-        // right after a grant, when the service hasn't started projecting yet.
-        if (Prefs.adaptiveEnabled && !ScreenCaptureService.running && !captureRequestInFlight &&
-            SystemClock.elapsedRealtime() - lastCaptureRequestAt > 3000
-        ) {
-            requestScreenCapture()
+        // First-run setup: ask for the permissions from the start, one at a
+        // time, until everything is granted.
+        if (!Prefs.setupDone && !setupShownThisSession) {
+            setupShownThisSession = true
+            handler.postDelayed({ showNextSetupStep() }, 400)
         }
+    }
+
+    // ------------------------------------------------------------------
+    // First-run setup
+    // ------------------------------------------------------------------
+
+    /** Walks through the missing permissions one dialog at a time. */
+    private fun showNextSetupStep() {
+        when {
+            !Settings.canDrawOverlays(this) -> showSetupDialog(
+                "Overlay permission",
+                "Lets NoShorts draw the box over the Shorts tab. Tap Continue, then turn on \"Display over other apps\" for NoShorts.",
+                Intent(
+                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                    Uri.parse("package:$packageName")
+                )
+            )
+            !isAccessibilityEnabled() -> showSetupDialog(
+                "Accessibility service",
+                "Lets NoShorts see YouTube's screen, hide the Shorts tab and press Back to leave Shorts. Tap Continue, then enable NoShorts.",
+                Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+            )
+            !isBatteryExempt() -> showSetupDialog(
+                "Battery optimization",
+                "Keeps the blocking working while you use other apps. Tap Continue and choose \"Don't optimize\".",
+                try {
+                    Intent(
+                        Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                        Uri.parse("package:$packageName")
+                    )
+                } catch (e: Exception) {
+                    Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+                }
+            )
+            else -> Prefs.setupDone = true
+        }
+    }
+
+    private fun showSetupDialog(title: String, desc: String, intent: Intent) {
+        AlertDialog.Builder(this)
+            .setTitle(title)
+            .setMessage(desc)
+            .setPositiveButton("Continue") { _, _ ->
+                try {
+                    startActivity(intent)
+                } catch (e: Exception) {
+                    Toast.makeText(this, "Could not open that setting", Toast.LENGTH_SHORT).show()
+                }
+            }
+            .setNegativeButton("Later", null)
+            .show()
     }
 
     override fun onDestroy() {
@@ -344,7 +367,7 @@ class MainActivity : AppCompatActivity() {
         val overlayOk = Settings.canDrawOverlays(this)
         val accessOk = isAccessibilityEnabled()
         val batteryOk = isBatteryExempt()
-        val captureOk = ScreenCaptureService.running
+        val captureOk = accessOk && Prefs.adaptiveEnabled
 
         findViewById<TextView>(R.id.statusOverlay).let { tv ->
             tv.text = if (overlayOk) "Overlay permission: OK" else "Overlay permission: needed"
@@ -359,7 +382,7 @@ class MainActivity : AppCompatActivity() {
             tv.setTextColor(if (batteryOk) getColorCompat(R.color.status_ok) else getColorCompat(R.color.status_warn))
         }
         findViewById<TextView>(R.id.statusCapture).let { tv ->
-            tv.text = if (captureOk) "Screen capture: running" else "Screen capture: off"
+            tv.text = if (captureOk) "Color match (a11y): on" else "Color match (a11y): off"
             tv.setTextColor(if (captureOk) getColorCompat(R.color.status_ok) else getColorCompat(R.color.status_warn))
         }
     }

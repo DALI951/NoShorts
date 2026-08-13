@@ -1,12 +1,7 @@
 package com.dali951.noshorts
 
-import android.app.Notification
-import android.app.NotificationChannel
-import android.app.NotificationManager
 import android.app.Service
-import android.content.Context
 import android.content.Intent
-import android.content.pm.ServiceInfo
 import android.graphics.PixelFormat
 import android.graphics.Rect
 import android.graphics.drawable.ColorDrawable
@@ -63,7 +58,7 @@ class OverlayService : Service() {
             instance?.onInShortsPlayer(inPlayer)
         }
 
-        /** Called by ScreenCaptureService with the color under the bar strip. */
+        /** Called by the accessibility service with the sampled color under the bar strip. */
         fun setAdaptiveColor(color: Int?) {
             instance?.onAdaptiveColor(color)
         }
@@ -96,27 +91,11 @@ class OverlayService : Service() {
         Prefs.init(this)
         instance = this
         isRunning = true
-        // Foreground service so the box keeps running no matter what happens
-        // to the rest of the app (swiped away, process trimmed, …). The
-        // notification is invisible: POST_NOTIFICATIONS is declared but never
-        // granted.
-        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        nm.createNotificationChannel(
-            NotificationChannel("overlay", "Overlay service", NotificationManager.IMPORTANCE_LOW)
-        )
-        val notification = Notification.Builder(this, "overlay")
-            .setSmallIcon(R.drawable.ic_visibility)
-            .setContentTitle(getString(R.string.app_name))
-            .setContentText(getString(R.string.overlay_notification_text))
-            .setOngoing(true)
-            .build()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            startForeground(2, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
-        } else {
-            startForeground(2, notification)
-        }
         createBox()
     }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int =
+        START_STICKY
 
     private fun createBox() {
         try {
@@ -181,9 +160,6 @@ class OverlayService : Service() {
         val v = box ?: return
         val show = shouldShow() || previewMode
         boxVisible = show
-        // Let the color sampler know whether the strip it reads is the real
-        // nav bar or video content (bar hidden → box hidden → no sampling).
-        ScreenCaptureService.setBoxVisible(show)
         if (!show) {
             v.visibility = View.GONE
             return
@@ -264,7 +240,6 @@ class OverlayService : Service() {
         isRunning = false
         previewMode = false
         boxVisible = false
-        ScreenCaptureService.setBoxVisible(false)
         try {
             box?.let { wm?.removeView(it) }
         } catch (e: Exception) {
