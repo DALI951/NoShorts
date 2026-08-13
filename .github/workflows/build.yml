@@ -13,6 +13,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Decode keystore
+        run: |
+          echo "${{ secrets.NOSHORTS_KEYSTORE_B64 }}" | base64 -d > app/release-key.jks
+
+      - name: Create keystore.properties
+        run: |
+          cat > keystore.properties << EOF
+          storePassword=${{ secrets.NOSHORTS_KEY_PASSWORD }}
+          keyPassword=${{ secrets.NOSHORTS_KEY_PASSWORD }}
+          keyAlias=${{ secrets.NOSHORTS_KEY_ALIAS }}
+          storeFile=release-key.jks
+          EOF
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin

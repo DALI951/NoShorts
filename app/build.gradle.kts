@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -11,15 +13,35 @@ android {
         applicationId = "com.dali951.noshorts"
         minSdk = 29
         targetSdk = 35
-        versionCode = 4
-        versionName = "1.2.0"
+        versionCode = 5
+        versionName = "1.3.0"
+    }
+
+    signingConfigs {
+        create("release") {
+            val props = rootProject.file("keystore.properties")
+            if (props.exists()) {
+                val kp = Properties()
+                kp.load(props.inputStream())
+                storeFile = file(kp["storeFile"] as String)
+                storePassword = kp["storePassword"] as String
+                keyAlias = kp["keyAlias"] as String
+                keyPassword = kp["keyPassword"] as String
+            }
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
-            // Sign release builds with the debug key so CI APKs install on the phone
-            signingConfig = signingConfigs.getByName("debug")
+            // Same signature everywhere (local + CI) so updates always install.
+            // Falls back to the debug key when keystore.properties is missing.
+            val props = rootProject.file("keystore.properties")
+            signingConfig = if (props.exists()) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
         }
     }
     buildFeatures {

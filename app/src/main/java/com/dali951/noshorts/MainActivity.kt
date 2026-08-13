@@ -12,6 +12,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
+import android.os.SystemClock
 import android.provider.Settings
 import android.view.View
 import android.widget.Button
@@ -30,6 +31,7 @@ class MainActivity : AppCompatActivity() {
 
     private var previewActive = false
     private var captureRequestInFlight = false
+    private var lastCaptureRequestAt = 0L
     private val handler = Handler(Looper.getMainLooper())
 
     private lateinit var btnPreview: Button
@@ -74,6 +76,7 @@ class MainActivity : AppCompatActivity() {
     private fun requestScreenCapture() {
         if (captureRequestInFlight) return
         captureRequestInFlight = true
+        lastCaptureRequestAt = SystemClock.elapsedRealtime()
         val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         captureLauncher.launch(mpm.createScreenCaptureIntent())
     }
@@ -250,8 +253,11 @@ class MainActivity : AppCompatActivity() {
             startService(Intent(this, OverlayService::class.java))
         }
         // If color matching is wanted but the capture service died (e.g. after reboot),
-        // ask for the permission again — one tap.
-        if (Prefs.adaptiveEnabled && !ScreenCaptureService.running && !captureRequestInFlight) {
+        // ask for the permission again — one tap. The 3s grace avoids double-asking
+        // right after a grant, when the service hasn't started projecting yet.
+        if (Prefs.adaptiveEnabled && !ScreenCaptureService.running && !captureRequestInFlight &&
+            SystemClock.elapsedRealtime() - lastCaptureRequestAt > 3000
+        ) {
             requestScreenCapture()
         }
     }

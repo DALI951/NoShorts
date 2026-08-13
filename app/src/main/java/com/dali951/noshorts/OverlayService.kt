@@ -15,11 +15,13 @@ import android.view.WindowManager
  * Draws a solid box over the Shorts tab in YouTube's bottom navigation bar.
  * The box blocks touches, so the Shorts tab cannot be seen or clicked.
  *
- * v1.2 behavior:
+ * v1.3 behavior:
  * - visibility AND position are driven by the REAL "Shorts" tab bounds read
  *   from YouTube's accessibility tree (set by ShortsWatchAccessibilityService).
- *   The box appears only while that icon is actually visible, follows it, and
- *   disappears when the bar hides, YouTube closes, or another app opens.
+ *   The box is centered on the tab's actual bounds (both axes), appears only
+ *   while that icon is actually visible, follows it, and disappears when the
+ *   bar hides, a video goes fullscreen, the Shorts player opens, YouTube
+ *   closes, or another app opens.
  * - preview mode shows the box anywhere for tuning and always stops when told.
  */
 class OverlayService : Service() {
@@ -31,6 +33,10 @@ class OverlayService : Service() {
         var isRunning = false
             private set
 
+        /** True while the Shorts player is open — the box is suppressed. */
+        var inShortsPlayer = false
+            private set
+
         /** Called by the accessibility service whenever the foreground app changes. */
         fun setYouTubeForeground(isYouTube: Boolean) {
             instance?.onYouTubeForeground(isYouTube)
@@ -39,6 +45,11 @@ class OverlayService : Service() {
         /** Called by the accessibility service with the real bounds of the Shorts tab (or null). */
         fun setShortsTabRect(rect: Rect?) {
             instance?.onShortsTabRect(rect)
+        }
+
+        /** Called by the accessibility service when the Shorts player opens/closes. */
+        fun setInShortsPlayer(inPlayer: Boolean) {
+            instance?.onInShortsPlayer(inPlayer)
         }
 
         /** Called by ScreenCaptureService with the color under the bar strip. */
@@ -63,6 +74,7 @@ class OverlayService : Service() {
     private var boxParams: WindowManager.LayoutParams? = null
     private var youtubeVisible = false
     private var shortsTabRect: Rect? = null
+    private var shortsPlayerOpen = false
     private var adaptiveColor: Int? = null
     private var lastRenderedColor = 0
 
@@ -110,17 +122,23 @@ class OverlayService : Service() {
         recompute()
     }
 
+    private fun onInShortsPlayer(inPlayer: Boolean) {
+        if (shortsPlayerOpen == inPlayer) return
+        shortsPlayerOpen = inPlayer
+        recompute()
+    }
+
     private fun onAdaptiveColor(color: Int?) {
         adaptiveColor = color
         applyColor()
     }
 
     /**
-     * The box shows only while the Shorts tab icon is actually on screen.
-     * "Keep after closing YouTube" (v1.1) is gone — the box never floats
-     * over other apps or video content anymore.
+     * The box shows only while the Shorts tab icon is actually on screen and
+     * no Shorts player is covering it. "Keep after closing YouTube" (v1.1) is
+     * gone — the box never floats over other apps or video content anymore.
      */
-    private fun shouldShow(): Boolean = youtubeVisible && shortsTabRect != null
+    private fun shouldShow(): Boolean = youtubeVisible && shortsTabRect != null && !shortsPlayerOpen
 
     private fun recompute() {
         val v = box ?: return
@@ -138,8 +156,6 @@ class OverlayService : Service() {
 
     private fun positionBox(v: View) {
         val d = resources.displayMetrics.density
-        val wPx = resources.displayMetrics.widthPixels
-        val hPx = resources.displayMetrics.heightPixels
 
         val boxW = (Prefs.boxWidthDp * d).toInt()
         val boxH = (Prefs.boxHeightDp * d).toInt()
@@ -148,23 +164,32 @@ class OverlayService : Service() {
 
         val rect = shortsTabRect
         val centerX: Int
+        val centerY: Int
         val width: Int
+        val height: Int
         if (rect != null) {
-            // Follow the real icon: center on its node, never narrower than it.
+            // Follow the real tab: center the box on its node (both axes),
+            // padded so the icon + label are always covered.
             val nodePad = (8 * d).toInt()
             centerX = rect.centerX() + shift
+            centerY = rect.centerY() + bottomOff
             width = maxOf(boxW, rect.width() + 2 * nodePad)
+            height = maxOf(boxH, rect.height() + 2 * nodePad)
         } else {
             // Fallback for preview while YouTube is closed: 2nd of 5 tabs.
+            val wPx = resources.displayMetrics.widthPixels
+            val hPx = resources.displayMetrics.heightPixels
             centerX = (wPx * 0.30f).toInt() + shift
+            centerY = hPx - bottomOff - boxH / 2
             width = boxW
+            height = boxH
         }
 
         boxParams?.let { p ->
             p.width = width
-            p.height = boxH
+            p.height = height
             p.x = centerX - width / 2
-            p.y = hPx - bottomOff - boxH
+            p.y = centerY - height / 2
             p.gravity = Gravity.TOP or Gravity.START
         }
 

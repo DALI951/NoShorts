@@ -92,6 +92,12 @@ class ScreenCaptureService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // Already projecting (e.g. user granted the consent dialog twice) —
+        // keep the existing projection instead of leaking a second one.
+        if (projection != null) {
+            Log.w(TAG, "already running — ignoring duplicate start")
+            return START_NOT_STICKY
+        }
         val resultCode = intent?.getIntExtra("resultCode", 0) ?: 0
         val data: Intent? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             intent?.getParcelableExtra("data", Intent::class.java)

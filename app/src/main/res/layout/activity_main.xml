@@ -476,7 +476,7 @@
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
-                        android:text="Overlay permission: â€¦"
+                        android:text="Overlay permission: …"
                         android:textAppearance="?attr/textAppearanceBodyMedium" />
 
                     <TextView
@@ -499,7 +499,7 @@
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
-                        android:text="Accessibility service: â€¦"
+                        android:text="Accessibility service: …"
                         android:textAppearance="?attr/textAppearanceBodyMedium" />
 
                     <TextView
@@ -522,7 +522,7 @@
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
-                        android:text="Battery optimization: â€¦"
+                        android:text="Battery optimization: …"
                         android:textAppearance="?attr/textAppearanceBodyMedium" />
 
                     <TextView
@@ -615,7 +615,7 @@
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:layout_marginStart="12dp"
-                        android:text="Downloadingâ€¦"
+                        android:text="Downloading…"
                         android:textAppearance="?attr/textAppearanceBodySmall" />
                 </LinearLayout>
 
@@ -663,7 +663,7 @@
             android:layout_marginTop="16dp"
             android:layout_marginBottom="24dp"
             android:gravity="center"
-            android:text="Tip: also set YouTube â€º Settings â€º Time management â€º Shorts feed limit to zero minutes."
+            android:text="Tip: also set YouTube › Settings › Time management › Shorts feed limit to zero minutes."
             android:textAppearance="?attr/textAppearanceBodySmall" />
     </LinearLayout>
 </ScrollView>

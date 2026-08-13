@@ -8,3 +8,6 @@ release/
 captures/
 .externalNativeBuild/
 .cxx/
+
+keystore.properties
+app/release-key.jks
