@@ -311,9 +311,20 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private val livePoller = object : Runnable {
+        override fun run() {
+            val tv = findViewById<TextView>(R.id.txtLive)
+            val live = ShortsWatchAccessibilityService.liveStatus
+            tv.text = "Live: " + (live.ifBlank { "accessibility service not connected" })
+            handler.postDelayed(this, 1000)
+        }
+    }
+
     private fun startDownloadPoller() {
         handler.removeCallbacks(downloadPoller)
         handler.postDelayed(downloadPoller, 1000)
+        handler.removeCallbacks(livePoller)
+        handler.postDelayed(livePoller, 500)
     }
 
     private fun updateDownloadBanner() {

@@ -67,6 +67,10 @@ class ShortsWatchAccessibilityService : AccessibilityService() {
 
         /** The on-device diagnostic log (latest 80 lines, persisted). */
         fun getDiag(): String = Prefs.diagLog
+
+        /** Live pipeline state, refreshed every poll; shown in the app. */
+        @Volatile
+        var liveStatus: String = ""
     }
 
     private val handler = Handler(Looper.getMainLooper())
@@ -139,6 +143,7 @@ class ShortsWatchAccessibilityService : AccessibilityService() {
                     // Preview is a tuning tool — never let it keep floating
                     // over real YouTube usage.
                     OverlayService.setPreview(false)
+                    selfHealOverlay()
                     startTabPolling()
                     scheduleScan(1200)
                     scheduleExitCheck(700)
@@ -211,6 +216,12 @@ class ShortsWatchAccessibilityService : AccessibilityService() {
                     maybeSampleColor()
                     selfHealOverlay()
                     val now = System.currentTimeMillis()
+                    liveStatus =
+                        "yt=${if (ytForeground) 1 else 0} " +
+                            "tab=${detLabel(found, rect)} " +
+                            "player=${if (OverlayService.inShortsPlayer) 1 else 0} " +
+                            "ovl=${if (OverlayService.isRunning) 1 else 0} " +
+                            "box=${if (OverlayService.boxVisible) 1 else 0}"
                     if (now - lastHeartbeatAt > 5000) {
                         lastHeartbeatAt = now
                         val hb =
@@ -219,6 +230,15 @@ class ShortsWatchAccessibilityService : AccessibilityService() {
                                 "ovl=${OverlayService.isRunning} box=${OverlayService.boxVisible}"
                         Log.i(TAG, hb)
                         diag(hb)
+                        if (ytForeground && !OverlayService.boxVisible) {
+                            val why = when {
+                                !OverlayService.isRunning -> "overlay service down"
+                                OverlayService.inShortsPlayer -> "shorts player open (suppressed)"
+                                rect == null -> "no tab node found"
+                                else -> "unknown"
+                            }
+                            diag("box OFF while on YouTube: $why")
+                        }
                     }
                 }
             } catch (e: Exception) {
@@ -594,8 +614,12 @@ class ShortsWatchAccessibilityService : AccessibilityService() {
             n.isVisibleToUser &&
                 n.viewIdResourceName?.lowercase()?.contains("reel_progress_bar") == true
         }?.let { return it }
+        // Fallback: exact "Shorts" text pinned to the very top. NOT clickable
+        // (excludes the feed's chip row and the bottom-nav tab), NOT mid-screen
+        // (excludes the feed's Shorts shelf header). Only the player's title
+        // fits all three.
         return findTextNode(root) { n ->
-            if (!n.isVisibleToUser) return@findTextNode false
+            if (!n.isVisibleToUser || n.isClickable) return@findTextNode false
             val t = n.text?.toString() ?: ""
             val cd = n.contentDescription?.toString() ?: ""
             val exact = SHORTS_LABELS.any { t.equals(it, true) || cd.equals(it, true) }

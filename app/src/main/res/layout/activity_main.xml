@@ -611,6 +611,14 @@
                         android:layout_height="wrap_content"
                         android:text="Diagnostics" />
                 </LinearLayout>
+
+                <TextView
+                    android:id="@+id/txtLive"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:text="Live: waiting…"
+                    android:textAppearance="?attr/textAppearanceBodySmall" />
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
 

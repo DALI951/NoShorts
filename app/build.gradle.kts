@@ -13,8 +13,8 @@ android {
         applicationId = "com.dali951.noshorts"
         minSdk = 29
         targetSdk = 35
-        versionCode = 9
-        versionName = "1.3.4"
+        versionCode = 10
+        versionName = "1.3.5"
     }
 
     signingConfigs {
