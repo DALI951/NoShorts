@@ -38,6 +38,10 @@ class OverlayService : Service() {
         var boxVisible = false
             private set
 
+        /** Screen Y of the box center (for the color sampler); null when hidden. */
+        val boxCenterY: Int?
+            get() = instance?.boxCenterY
+
         /** True while the Shorts player is open — the box is suppressed. */
         var inShortsPlayer = false
             private set
@@ -83,6 +87,10 @@ class OverlayService : Service() {
     private var shortsPlayerOpen = false
     private var adaptiveColor: Int? = null
     private var lastRenderedColor = 0
+
+    /** Screen Y of the box center (for the color sampler); null when hidden. */
+    var boxCenterY: Int? = null
+        private set
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -161,6 +169,7 @@ class OverlayService : Service() {
         val show = shouldShow() || previewMode
         boxVisible = show
         if (!show) {
+            boxCenterY = null
             v.visibility = View.GONE
             return
         }
@@ -181,24 +190,29 @@ class OverlayService : Service() {
         val centerY: Int
         val width: Int
         val height: Int
-        if (rect != null) {
-            // Follow the real tab: center the box on its node (both axes),
-            // padded so the icon + label are always covered.
-            val nodePad = (8 * d).toInt()
-            centerX = rect.centerX() + shift
-            centerY = rect.centerY() + bottomOff
-            width = maxOf(boxW, rect.width() + 2 * nodePad)
-            height = maxOf(boxH, rect.height() + 2 * nodePad)
+        // Real tab node: cover the icon AND its label generously (the node is
+        // often just the label pill — nudge up so the icon above it is hidden
+        // too). Wide slivers (bar hiding mid-scroll) and the 2px estimate
+        // marker fall to the fixed-size path so the box never stretches.
+        val nodeMode = rect != null && rect.width() > (8 * d).toInt() &&
+            rect.width() <= rect.height() * 3
+        if (nodeMode) {
+            val nodePad = (24 * d).toInt()
+            centerX = rect!!.centerX() + shift
+            centerY = rect!!.centerY() + bottomOff - (12 * d).toInt()
+            width = maxOf(boxW, rect!!.width() + 2 * nodePad)
+            height = maxOf(boxH, rect!!.height() + 2 * nodePad)
         } else {
-            // Fallback for preview while YouTube is closed: 2nd of 5 tabs.
+            // Estimate marker / fallback / weird node: fixed-size box.
             val wPx = resources.displayMetrics.widthPixels
             val hPx = resources.displayMetrics.heightPixels
-            centerX = (wPx * 0.30f).toInt() + shift
-            centerY = hPx - bottomOff - boxH / 2
+            centerX = (rect?.centerX() ?: (wPx * 0.30f).toInt()) + shift
+            centerY = (rect?.centerY() ?: (hPx - bottomOff - boxH / 2)) + bottomOff
             width = boxW
             height = boxH
         }
 
+        boxCenterY = centerY
         boxParams?.let { p ->
             p.width = width
             p.height = height
@@ -240,6 +254,7 @@ class OverlayService : Service() {
         isRunning = false
         previewMode = false
         boxVisible = false
+        boxCenterY = null
         try {
             box?.let { wm?.removeView(it) }
         } catch (e: Exception) {

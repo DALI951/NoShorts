@@ -79,6 +79,8 @@ class ShortsWatchAccessibilityService : AccessibilityService() {
     private var lastSampleAt = 0L
     private var lastSample: Int? = null
     private var lastOverlayRestartAt = 0L
+    private var lastNodeFoundAt = 0L
+    private var ytSince = 0L
     private val diag = ArrayDeque<String>()
 
     /** Timestamped diagnostic line, kept in a ring buffer + persisted. */
@@ -132,6 +134,11 @@ class ShortsWatchAccessibilityService : AccessibilityService() {
                 Log.i(TAG, "Foreground: $pkg")
                 diag("foreground: $pkg")
                 if (ytForeground) {
+                    ytSince = System.currentTimeMillis()
+                    lastNodeFoundAt = 0
+                    // Preview is a tuning tool — never let it keep floating
+                    // over real YouTube usage.
+                    OverlayService.setPreview(false)
                     startTabPolling()
                     scheduleScan(1200)
                     scheduleExitCheck(700)
@@ -182,11 +189,22 @@ class ShortsWatchAccessibilityService : AccessibilityService() {
                     var found: AccessibilityNodeInfo? = null
                     var rect: Rect? = null
                     if (root != null) {
-                        found = findShortsTab(root)
-                        rect = if (found != null) {
-                            Rect().also { found.getBoundsInScreen(it) }
+                        val now = System.currentTimeMillis()
+                        val player = findShortsPlayer(root)
+                        if (player != null) {
+                            // The Shorts player is open: suppress the box AND
+                            // leave Shorts. Checked every poll so the box can
+                            // never sit over the player.
+                            OverlayService.setInShortsPlayer(true)
+                            runExitSequence(root)
                         } else {
-                            estimateTabRect()
+                            found = findShortsTab(root)
+                            rect = if (found != null) {
+                                lastNodeFoundAt = now
+                                Rect().also { found.getBoundsInScreen(it) }
+                            } else if (estimateAllowed(now)) {
+                                estimateTabRect()
+                            } else null
                         }
                     }
                     updateShortsRect(rect)
@@ -214,6 +232,18 @@ class ShortsWatchAccessibilityService : AccessibilityService() {
         found != null -> "node"
         rect != null -> "est(${Prefs.tabPosPct.toInt()}%)"
         else -> "null"
+    }
+
+    /**
+     * The estimate fallback only fires when the tab is EXPECTED to be visible:
+     * either the tab was just found (node lost <3s ago — bar mid-animation) or
+     * no node has EVER been found while YouTube is foreground (canvas-drawn
+     * bar). Never while the Shorts player is open — that's the whole point.
+     */
+    private fun estimateAllowed(now: Long): Boolean {
+        if (OverlayService.inShortsPlayer) return false
+        if (lastNodeFoundAt != 0L) return now - lastNodeFoundAt < 3000
+        return now - ytSince > 1500
     }
 
     /**
@@ -306,7 +336,7 @@ class ShortsWatchAccessibilityService : AccessibilityService() {
                 val d = resources.displayMetrics.density
                 val bottomOff = (Prefs.bottomOffsetDp * d).toInt()
                 val boxH = (Prefs.boxHeightDp * d).toInt()
-                val y = (h - bottomOff - boxH / 2).coerceIn(0, h - 1)
+                val y = (OverlayService.boxCenterY ?: (h - bottomOff - boxH / 2)).coerceIn(0, h - 1)
                 val samples = arrayListOf<Int>()
                 // Same band as the box, but in the GAPS between the bottom-nav
                 // icons (15/42/65/85% width) where the bar is plain background.
@@ -412,10 +442,15 @@ class ShortsWatchAccessibilityService : AccessibilityService() {
         return SHORTS_LABELS.any { t.equals(it, true) || cd.equals(it, true) }
     }
 
-    /** Bounds are the ground truth — no isVisibleToUser (it's often stale). */
+    /**
+     * Bounds are the ground truth — no isVisibleToUser (it's often stale).
+     * The aspect check keeps out wide slivers (bar hiding mid-scroll) and
+     * horizontal text rows, which would stretch the box sideways.
+     */
     private fun isTabVisible(n: AccessibilityNodeInfo, bottomY: Int, screenH: Int, screenW: Int): Boolean {
         val b = Rect().also { n.getBoundsInScreen(it) }
-        return b.width() > 0 && b.height() > 0 &&
+        return b.width() > 0 && b.height() >= 40 &&
+            b.width() <= b.height() * 3 &&
             b.centerY() > bottomY &&
             b.top < screenH && b.bottom > 0 && b.left >= 0 && b.right <= screenW
     }
@@ -432,7 +467,8 @@ class ShortsWatchAccessibilityService : AccessibilityService() {
         val candidates = findNodes(root) { n ->
             if (!n.isVisibleToUser) return@findNodes false
             val b = Rect().also { n.getBoundsInScreen(it) }
-            b.height() in 20..240 && b.width() in 20..320 &&
+            b.height() in 40..240 && b.width() in 20..320 &&
+                b.width() <= b.height() * 3 &&
                 b.centerY() > bottomY && b.top < screenH && b.bottom > 0 &&
                 b.left >= 0 && b.right <= screenW
         }
@@ -488,50 +524,60 @@ class ShortsWatchAccessibilityService : AccessibilityService() {
      */
     private val exitRunnable = Runnable {
         if (!ytForeground || !Prefs.autoExitShorts) return@Runnable
-        val now = System.currentTimeMillis()
-        if (now - lastExitAt < EXIT_COOLDOWN_MS) return@Runnable
         try {
             val root = rootInActiveWindow ?: return@Runnable
-            val shorts = findShortsPlayer(root) ?: return@Runnable
-            OverlayService.setInShortsPlayer(true)
-            Log.i(TAG, "Shorts open — pressing Back")
-            diag("Shorts open — pressing Back")
-            dumpRelevant(root)
-            performGlobalAction(GLOBAL_ACTION_BACK)
-            lastExitAt = now
-            var backs = 1
-            // After the back animation, if we're still in Shorts, back again.
-            // (Player → its feed grid → previous tab, max 3 total.)
-            for (round in 1..(MAX_EXIT_BACKS - 1)) {
-                handler.postDelayed({
-                    try {
-                        if (!ytForeground || backs >= MAX_EXIT_BACKS) return@postDelayed
-                        val r = rootInActiveWindow ?: return@postDelayed
-                        if (findShortsPlayer(r) != null) {
-                            performGlobalAction(GLOBAL_ACTION_BACK)
-                            backs++
-                            Log.i(TAG, "Still in Shorts — Back again ($backs/$MAX_EXIT_BACKS)")
-                        } else {
-                            OverlayService.setInShortsPlayer(false)
-                            Log.i(TAG, "Out of Shorts")
-                            diag("out of Shorts")
-                        }
-                    } catch (e: Exception) {
-                        Log.w(TAG, "exit re-check error: ${e.message}")
-                    }
-                }, 800L * round)
-            }
-            // Always release the player flag when the sequence ends — a match
-            // that survives MAX backs is likely a false positive (e.g. the
-            // feed's Shorts shelf), and suppressing the box forever would be
-            // worse than one extra back. Re-detection re-suppresses instantly.
-            handler.postDelayed({
-                OverlayService.setInShortsPlayer(false)
-                Log.i(TAG, "exit sequence done — player flag released")
-            }, 800L * MAX_EXIT_BACKS)
+            if (findShortsPlayer(root) != null) runExitSequence(root)
         } catch (e: Exception) {
             Log.w(TAG, "exit error: ${e.message}")
         }
+    }
+
+    /**
+     * If a Short opened anyway, press Back to leave — that's the whole point.
+     * Called from the event-driven check (~350ms after content changes) AND
+     * from the tab poll (so it also fires when no events arrive, e.g. idle
+     * Shorts player). Throttled by the 15s exit cooldown.
+     */
+    private fun runExitSequence(root: AccessibilityNodeInfo) {
+        if (!Prefs.autoExitShorts) return
+        val now = System.currentTimeMillis()
+        if (now - lastExitAt < EXIT_COOLDOWN_MS) return
+        OverlayService.setInShortsPlayer(true)
+        Log.i(TAG, "Shorts open — pressing Back")
+        diag("Shorts open — pressing Back")
+        dumpRelevant(root)
+        performGlobalAction(GLOBAL_ACTION_BACK)
+        lastExitAt = now
+        var backs = 1
+        // After the back animation, if we're still in Shorts, back again.
+        // (Player → its feed grid → previous tab, max 3 total.)
+        for (round in 1..(MAX_EXIT_BACKS - 1)) {
+            handler.postDelayed({
+                try {
+                    if (!ytForeground || backs >= MAX_EXIT_BACKS) return@postDelayed
+                    val r = rootInActiveWindow ?: return@postDelayed
+                    if (findShortsPlayer(r) != null) {
+                        performGlobalAction(GLOBAL_ACTION_BACK)
+                        backs++
+                        Log.i(TAG, "Still in Shorts — Back again ($backs/$MAX_EXIT_BACKS)")
+                    } else {
+                        OverlayService.setInShortsPlayer(false)
+                        Log.i(TAG, "Out of Shorts")
+                        diag("out of Shorts")
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "exit re-check error: ${e.message}")
+                }
+            }, 800L * round)
+        }
+        // Always release the player flag when the sequence ends — a match
+        // that survives MAX backs is likely a false positive (e.g. the
+        // feed's Shorts shelf), and suppressing the box forever would be
+        // worse than one extra back. Re-detection re-suppresses instantly.
+        handler.postDelayed({
+            OverlayService.setInShortsPlayer(false)
+            Log.i(TAG, "exit sequence done — player flag released")
+        }, 800L * MAX_EXIT_BACKS)
     }
 
     /**

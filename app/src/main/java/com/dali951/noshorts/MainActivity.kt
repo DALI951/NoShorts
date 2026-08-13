@@ -194,6 +194,10 @@ class MainActivity : AppCompatActivity() {
 
         // ---- open YouTube ----
         findViewById<Button>(R.id.btnYouTube).setOnClickListener {
+            // Preview is for tuning — never let it float over real usage.
+            OverlayService.setPreview(false)
+            previewActive = false
+            btnPreview.text = "Preview box on this screen"
             try {
                 startActivity(
                     Intent(Intent.ACTION_VIEW).apply {
