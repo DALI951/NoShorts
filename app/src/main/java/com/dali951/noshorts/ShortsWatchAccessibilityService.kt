@@ -9,6 +9,7 @@ import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.widget.Toast
+import java.util.ArrayDeque
 
 /**
  * Three jobs:
@@ -50,9 +51,6 @@ class ShortsWatchAccessibilityService : AccessibilityService() {
         /** The tab row lives in the bottom 18% of the screen. */
         private const val NAV_BAND = 0.82f
 
-        /** The Shorts player title lives in the top 45% of the screen. */
-        private const val PLAYER_BAND = 0.45f
-
         /** Content descriptions commonly used for the shelf's 3-dot button. */
         private val MORE_CDS = listOf(
             "more options", "more", "المزيد", "3-dot menu", "see more", "view more"
@@ -73,10 +71,31 @@ class ShortsWatchAccessibilityService : AccessibilityService() {
         // Auto-start the overlay so the box works without opening the app first.
         if (Prefs.overlayEnabled) {
             try {
-                startService(Intent(this, OverlayService::class.java))
+                startForegroundService(Intent(this, OverlayService::class.java))
             } catch (e: Exception) {
-                Log.w(TAG, "overlay auto-start failed: ${e.message}")
+                Log.w(TAG, "overlay FGS start failed: ${e.message}")
+                try {
+                    startService(Intent(this, OverlayService::class.java))
+                } catch (e2: Exception) {
+                    Log.w(TAG, "overlay start failed: ${e2.message}")
+                }
             }
+        }
+        // The service may have restarted while YouTube was already open —
+        // adopt the active window instead of waiting for the next event.
+        try {
+            val r = rootInActiveWindow
+            val pkg = r?.packageName?.toString()
+            if (pkg == YT_PACKAGE) {
+                ytForeground = true
+                OverlayService.setYouTubeForeground(true)
+                startTabPolling()
+                scheduleScan(1200)
+                scheduleExitCheck(700)
+                Log.i(TAG, "Service connected while YouTube active")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "connect probe error: ${e.message}")
         }
         Log.i(TAG, "Service connected")
     }
@@ -136,19 +155,25 @@ class ShortsWatchAccessibilityService : AccessibilityService() {
 
     private val tabPollRunnable = object : Runnable {
         override fun run() {
-            if (!ytForeground) return
             try {
-                val root = rootInActiveWindow
-                val rect = if (root != null) {
-                    findShortsTab(root)?.let { n -> Rect().also { n.getBoundsInScreen(it) } }
-                } else {
-                    null
-                }
-                updateShortsRect(rect)
-                val now = System.currentTimeMillis()
-                if (now - lastHeartbeatAt > 5000) {
-                    lastHeartbeatAt = now
-                    Log.i(TAG, "poll: yt=$ytForeground tab=${lastShortsRect != null} player=${OverlayService.inShortsPlayer}")
+                if (ytForeground) {
+                    val root = rootInActiveWindow
+                    val rect = if (root != null) {
+                        findShortsTab(root)?.let { n -> Rect().also { n.getBoundsInScreen(it) } }
+                    } else {
+                        null
+                    }
+                    updateShortsRect(rect)
+                    val now = System.currentTimeMillis()
+                    if (now - lastHeartbeatAt > 5000) {
+                        lastHeartbeatAt = now
+                        Log.i(
+                            TAG,
+                            "poll: yt=$ytForeground tab=${lastShortsRect != null} " +
+                                "player=${OverlayService.inShortsPlayer} " +
+                                "overlay=${OverlayService.isRunning} box=${OverlayService.boxVisible}"
+                        )
+                    }
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "tab poll error: ${e.message}")
@@ -205,7 +230,15 @@ class ShortsWatchAccessibilityService : AccessibilityService() {
             isShortsLabel(n) && isTabVisible(n, bottomY, screenH, screenW)
         }?.let { return it }
 
-        // 2) geometric fallback
+        // 2) view-id match — some YouTube versions expose the tab node with a
+        //    shorts_* id (e.g. shorts_tab). Feed-shelf shorts ids are mid-screen,
+        //    so the bottom-band check keeps them out.
+        findNodeBfs(root) { n ->
+            n.viewIdResourceName?.lowercase()?.contains("shorts") == true &&
+                isTabVisible(n, bottomY, screenH, screenW)
+        }?.let { return it }
+
+        // 3) geometric fallback
         return findTabByGeometry(root)
     }
 
@@ -215,8 +248,8 @@ class ShortsWatchAccessibilityService : AccessibilityService() {
         return SHORTS_LABELS.any { t.equals(it, true) || cd.equals(it, true) }
     }
 
+    /** Bounds are the ground truth — no isVisibleToUser (it's often stale). */
     private fun isTabVisible(n: AccessibilityNodeInfo, bottomY: Int, screenH: Int, screenW: Int): Boolean {
-        if (!n.isVisibleToUser) return false
         val b = Rect().also { n.getBoundsInScreen(it) }
         return b.width() > 0 && b.height() > 0 &&
             b.centerY() > bottomY &&
@@ -233,9 +266,9 @@ class ShortsWatchAccessibilityService : AccessibilityService() {
         val bottomY = (screenH * NAV_BAND).toInt()
 
         val candidates = findNodes(root) { n ->
-            if (!n.isClickable || !n.isVisibleToUser) return@findNodes false
+            if (!n.isVisibleToUser) return@findNodes false
             val b = Rect().also { n.getBoundsInScreen(it) }
-            b.height() in 20..220 && b.width() in 20..260 &&
+            b.height() in 20..240 && b.width() in 20..320 &&
                 b.centerY() > bottomY && b.top < screenH && b.bottom > 0 &&
                 b.left >= 0 && b.right <= screenW
         }
@@ -320,27 +353,41 @@ class ShortsWatchAccessibilityService : AccessibilityService() {
                     }
                 }, 800L * round)
             }
+            // Always release the player flag when the sequence ends — a match
+            // that survives MAX backs is likely a false positive (e.g. the
+            // feed's Shorts shelf), and suppressing the box forever would be
+            // worse than one extra back. Re-detection re-suppresses instantly.
+            handler.postDelayed({
+                OverlayService.setInShortsPlayer(false)
+                Log.i(TAG, "exit sequence done — player flag released")
+            }, 800L * MAX_EXIT_BACKS)
         } catch (e: Exception) {
             Log.w(TAG, "exit error: ${e.message}")
         }
     }
 
     /**
-     * "Shorts" title near the top of the screen = Shorts player or Shorts tab.
-     * Localized labels so it works with Arabic/French/… YouTube too.
+     * Is the Shorts PLAYER open? PRIMARY signal: the player's vertical
+     * position bar, exposed as view id "reel_progress_bar" — unique to the
+     * Shorts player, never present on the home feed (this is the signal the
+     * open-source Shorts-Blocker uses). FALLBACK: exact "Shorts" text pinned
+     * to the very top — deliberately NOT "contains" and NOT mid-screen so the
+     * home feed's Shorts shelf header can never trigger a back.
      */
     private fun findShortsPlayer(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
         val screenH = resources.displayMetrics.heightPixels
+        findNodeBfs(root) { n ->
+            n.isVisibleToUser &&
+                n.viewIdResourceName?.lowercase()?.contains("reel_progress_bar") == true
+        }?.let { return it }
         return findTextNode(root) { n ->
             if (!n.isVisibleToUser) return@findTextNode false
             val t = n.text?.toString() ?: ""
             val cd = n.contentDescription?.toString() ?: ""
-            val isShorts = SHORTS_LABELS.any {
-                t.equals(it, true) || cd.equals(it, true) || t.contains(it, true) || cd.contains(it, true)
-            }
-            if (!isShorts) return@findTextNode false
+            val exact = SHORTS_LABELS.any { t.equals(it, true) || cd.equals(it, true) }
+            if (!exact) return@findTextNode false
             val b = Rect().also { n.getBoundsInScreen(it) }
-            b.centerY() < screenH * PLAYER_BAND && b.height() > 0
+            b.centerY() < screenH * 0.30 && b.height() > 0
         }
     }
 
@@ -457,6 +504,25 @@ class ShortsWatchAccessibilityService : AccessibilityService() {
             val child = node.getChild(i) ?: continue
             val found = findTextNode(child, match)
             if (found != null) return found
+        }
+        return null
+    }
+
+    /** BFS over the accessibility tree (bounded); returns the first match. */
+    private fun findNodeBfs(
+        root: AccessibilityNodeInfo,
+        match: (AccessibilityNodeInfo) -> Boolean
+    ): AccessibilityNodeInfo? {
+        val queue = ArrayDeque<AccessibilityNodeInfo>()
+        queue.add(root)
+        var count = 0
+        while (queue.isNotEmpty() && count < 200) {
+            val n = queue.removeFirst()
+            count++
+            if (match(n)) return n
+            for (i in 0 until n.childCount) {
+                n.getChild(i)?.let(queue::add)
+            }
         }
         return null
     }

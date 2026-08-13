@@ -1,12 +1,18 @@
 package com.dali951.noshorts
 
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.app.Service
+import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.graphics.PixelFormat
 import android.graphics.Rect
 import android.graphics.drawable.ColorDrawable
 import android.os.Build
 import android.os.IBinder
+import android.util.Log
 import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
@@ -33,6 +39,10 @@ class OverlayService : Service() {
         var isRunning = false
             private set
 
+        /** True while the box is actually on screen (for diagnostics). */
+        var boxVisible = false
+            private set
+
         /** True while the Shorts player is open — the box is suppressed. */
         var inShortsPlayer = false
             private set
@@ -49,6 +59,7 @@ class OverlayService : Service() {
 
         /** Called by the accessibility service when the Shorts player opens/closes. */
         fun setInShortsPlayer(inPlayer: Boolean) {
+            inShortsPlayer = inPlayer
             instance?.onInShortsPlayer(inPlayer)
         }
 
@@ -85,31 +96,57 @@ class OverlayService : Service() {
         Prefs.init(this)
         instance = this
         isRunning = true
+        // Foreground service so the box keeps running no matter what happens
+        // to the rest of the app (swiped away, process trimmed, …). The
+        // notification is invisible: POST_NOTIFICATIONS is declared but never
+        // granted.
+        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        nm.createNotificationChannel(
+            NotificationChannel("overlay", "Overlay service", NotificationManager.IMPORTANCE_LOW)
+        )
+        val notification = Notification.Builder(this, "overlay")
+            .setSmallIcon(R.drawable.ic_visibility)
+            .setContentTitle(getString(R.string.app_name))
+            .setContentText(getString(R.string.overlay_notification_text))
+            .setOngoing(true)
+            .build()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            startForeground(2, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+        } else {
+            startForeground(2, notification)
+        }
         createBox()
     }
 
     private fun createBox() {
-        val view = View(this)
-        view.background = ColorDrawable(Prefs.boxColor)
-        lastRenderedColor = Prefs.boxColor
+        try {
+            val view = View(this)
+            view.background = ColorDrawable(Prefs.boxColor)
+            lastRenderedColor = Prefs.boxColor
 
-        val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-        } else {
-            @Suppress("DEPRECATION")
-            WindowManager.LayoutParams.TYPE_PHONE
+            val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+            } else {
+                @Suppress("DEPRECATION")
+                WindowManager.LayoutParams.TYPE_PHONE
+            }
+
+            boxParams = WindowManager.LayoutParams(
+                1, 1, type,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                PixelFormat.TRANSLUCENT
+            )
+
+            wm = getSystemService(WINDOW_SERVICE) as WindowManager
+            box = view
+            wm?.addView(view, boxParams)
+        } catch (e: Exception) {
+            // Missing "Display over other apps" permission — don't crash,
+            // just stop; MainActivity re-starts it once the user grants it.
+            Log.w("Overlay", "createBox failed: ${e.message}")
+            stopSelf()
         }
-
-        boxParams = WindowManager.LayoutParams(
-            1, 1, type,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
-            PixelFormat.TRANSLUCENT
-        )
-
-        wm = getSystemService(WINDOW_SERVICE) as WindowManager
-        box = view
-        wm?.addView(view, boxParams)
     }
 
     private fun onYouTubeForeground(isYouTube: Boolean) {
@@ -143,6 +180,7 @@ class OverlayService : Service() {
     private fun recompute() {
         val v = box ?: return
         val show = shouldShow() || previewMode
+        boxVisible = show
         // Let the color sampler know whether the strip it reads is the real
         // nav bar or video content (bar hidden → box hidden → no sampling).
         ScreenCaptureService.setBoxVisible(show)
@@ -225,6 +263,8 @@ class OverlayService : Service() {
         instance = null
         isRunning = false
         previewMode = false
+        boxVisible = false
+        ScreenCaptureService.setBoxVisible(false)
         try {
             box?.let { wm?.removeView(it) }
         } catch (e: Exception) {

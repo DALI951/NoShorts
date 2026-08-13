@@ -5,4 +5,5 @@
     <string name="accessibility_service_description">Watches YouTube and automatically presses "Show fewer Shorts" / "Not interested" so Shorts stay hidden from your feed. Also backs out when a Short opens anyway, and tells the overlay box when YouTube is open.</string>
     <string name="capture_notification_title">NoShorts</string>
     <string name="capture_notification_text">Matching box color to your screen…</string>
+    <string name="overlay_notification_text">Blocking the Shorts tab</string>
 </resources>

@@ -129,7 +129,7 @@ class MainActivity : AppCompatActivity() {
         swOverlay.setOnCheckedChangeListener { _, checked ->
             Prefs.overlayEnabled = checked
             if (checked) {
-                startService(Intent(this, OverlayService::class.java))
+                startForegroundService(Intent(this, OverlayService::class.java))
             } else {
                 OverlayService.setPreview(false)
                 stopService(Intent(this, OverlayService::class.java))
@@ -171,7 +171,7 @@ class MainActivity : AppCompatActivity() {
                     )
                     return@setOnClickListener
                 }
-                startService(Intent(this, OverlayService::class.java))
+                startForegroundService(Intent(this, OverlayService::class.java))
                 OverlayService.setPreview(true)
                 previewActive = true
                 btnPreview.text = "Stop preview"
@@ -250,7 +250,7 @@ class MainActivity : AppCompatActivity() {
         UpdateChecker.checkPendingRetry(this)
         // Restart the overlay if it was killed while the box should be active.
         if (Prefs.overlayEnabled && !OverlayService.isRunning) {
-            startService(Intent(this, OverlayService::class.java))
+            startForegroundService(Intent(this, OverlayService::class.java))
         }
         // If color matching is wanted but the capture service died (e.g. after reboot),
         // ask for the permission again — one tap. The 3s grace avoids double-asking

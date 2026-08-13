@@ -31,7 +31,12 @@
         <!-- Draws the color-matched box over the Shorts tab -->
         <service
             android:name=".OverlayService"
-            android:exported="false" />
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Blocks the YouTube Shorts tab with an overlay box" />
+        </service>
 
         <!-- Samples the screen so the box color follows the content behind it -->
         <service

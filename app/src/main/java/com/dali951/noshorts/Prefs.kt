@@ -20,7 +20,7 @@ object Prefs {
     }
 
     var overlayEnabled: Boolean
-        get() = sp.getBoolean("overlay_enabled", false)
+        get() = sp.getBoolean("overlay_enabled", true)
         set(v) = sp.edit().putBoolean("overlay_enabled", v).apply()
 
     var clickerEnabled: Boolean
