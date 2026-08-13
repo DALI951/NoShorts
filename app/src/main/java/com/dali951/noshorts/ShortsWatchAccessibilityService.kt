@@ -8,12 +8,16 @@ import android.graphics.Rect
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.provider.Settings
 import android.util.Log
 import android.view.Display
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.widget.Toast
+import java.text.SimpleDateFormat
 import java.util.ArrayDeque
+import java.util.Date
+import java.util.Locale
 import java.util.concurrent.Executor
 
 /**
@@ -60,6 +64,9 @@ class ShortsWatchAccessibilityService : AccessibilityService() {
         private val MORE_CDS = listOf(
             "more options", "more", "المزيد", "3-dot menu", "see more", "view more"
         )
+
+        /** The on-device diagnostic log (latest 80 lines, persisted). */
+        fun getDiag(): String = Prefs.diagLog
     }
 
     private val handler = Handler(Looper.getMainLooper())
@@ -71,6 +78,16 @@ class ShortsWatchAccessibilityService : AccessibilityService() {
     private var lastHeartbeatAt = 0L
     private var lastSampleAt = 0L
     private var lastSample: Int? = null
+    private var lastOverlayRestartAt = 0L
+    private val diag = ArrayDeque<String>()
+
+    /** Timestamped diagnostic line, kept in a ring buffer + persisted. */
+    private fun diag(line: String) {
+        val ts = SimpleDateFormat("HH:mm:ss", Locale.US).format(Date())
+        diag.addLast("[$ts] $line")
+        while (diag.size > 80) diag.removeFirst()
+        Prefs.diagLog = diag.joinToString("\n")
+    }
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -100,6 +117,7 @@ class ShortsWatchAccessibilityService : AccessibilityService() {
             Log.w(TAG, "connect probe error: ${e.message}")
         }
         Log.i(TAG, "Service connected")
+        diag("a11y service connected")
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -112,6 +130,7 @@ class ShortsWatchAccessibilityService : AccessibilityService() {
                 ytForeground = pkg == YT_PACKAGE
                 OverlayService.setYouTubeForeground(ytForeground)
                 Log.i(TAG, "Foreground: $pkg")
+                diag("foreground: $pkg")
                 if (ytForeground) {
                     startTabPolling()
                     scheduleScan(1200)
@@ -160,22 +179,28 @@ class ShortsWatchAccessibilityService : AccessibilityService() {
             try {
                 if (ytForeground) {
                     val root = rootInActiveWindow
-                    val rect = if (root != null) {
-                        findShortsTab(root)?.let { n -> Rect().also { n.getBoundsInScreen(it) } }
-                    } else {
-                        null
+                    var found: AccessibilityNodeInfo? = null
+                    var rect: Rect? = null
+                    if (root != null) {
+                        found = findShortsTab(root)
+                        rect = if (found != null) {
+                            Rect().also { found.getBoundsInScreen(it) }
+                        } else {
+                            estimateTabRect()
+                        }
                     }
                     updateShortsRect(rect)
                     maybeSampleColor()
+                    selfHealOverlay()
                     val now = System.currentTimeMillis()
                     if (now - lastHeartbeatAt > 5000) {
                         lastHeartbeatAt = now
-                        Log.i(
-                            TAG,
-                            "poll: yt=$ytForeground tab=${lastShortsRect != null} " +
+                        val hb =
+                            "poll: yt=$ytForeground tab=${detLabel(found, rect)} " +
                                 "player=${OverlayService.inShortsPlayer} " +
-                                "overlay=${OverlayService.isRunning} box=${OverlayService.boxVisible}"
-                        )
+                                "ovl=${OverlayService.isRunning} box=${OverlayService.boxVisible}"
+                        Log.i(TAG, hb)
+                        diag(hb)
                     }
                 }
             } catch (e: Exception) {
@@ -183,6 +208,50 @@ class ShortsWatchAccessibilityService : AccessibilityService() {
             }
             handler.postDelayed(this, TAB_POLL_MS)
         }
+    }
+
+    private fun detLabel(found: AccessibilityNodeInfo?, rect: Rect?): String = when {
+        found != null -> "node"
+        rect != null -> "est(${Prefs.tabPosPct.toInt()}%)"
+        else -> "null"
+    }
+
+    /**
+     * If the overlay service died, bring it back. Runs from the poll (a11y is
+     * alive whenever this whole pipeline is), throttled to once per 10s, and
+     * only when the overlay permission is actually granted (else the service
+     * would just stopSelf again).
+     */
+    private fun selfHealOverlay() {
+        if (!Prefs.overlayEnabled || OverlayService.isRunning) return
+        if (!Settings.canDrawOverlays(this)) return
+        val now = System.currentTimeMillis()
+        if (now - lastOverlayRestartAt < 10_000) return
+        lastOverlayRestartAt = now
+        diag("overlay not running — restarting")
+        try {
+            startService(Intent(this, OverlayService::class.java))
+        } catch (e: Exception) {
+            diag("overlay restart failed: ${e.message}")
+        }
+    }
+
+    /**
+     * Fallback position for the box when the Shorts tab has no accessible
+     * node (canvas-drawn bars, future layouts): the bar is at the bottom,
+     * the Shorts icon sits at Prefs.tabPosPct% of screen width. The sliders
+     * (shift/bottom offset) still apply on top of this.
+     */
+    private fun estimateTabRect(): Rect {
+        val w = resources.displayMetrics.widthPixels
+        val h = resources.displayMetrics.heightPixels
+        val d = resources.displayMetrics.density
+        val x = (w * Prefs.tabPosPct / 100f).toInt()
+        val bottomOff = (Prefs.bottomOffsetDp * d).toInt()
+        val boxH = (Prefs.boxHeightDp * d).toInt()
+        val top = (h - bottomOff - boxH).coerceAtLeast(0)
+        val bottom = (h - bottomOff).coerceAtMost(h)
+        return Rect(x - 1, top, x + 1, bottom)
     }
 
     // ------------------------------------------------------------------
@@ -297,7 +366,9 @@ class ShortsWatchAccessibilityService : AccessibilityService() {
         // the player covers the feed's nav bar. Suppress the box until we
         // leave the player (the tab reappearing means we're back).
         OverlayService.setShortsTabRect(if (suppressed) null else rect)
-        Log.i(TAG, "tab ${rect?.flattenToString() ?: "null"}")
+        val line = "tab ${rect?.flattenToString() ?: "null"}"
+        Log.i(TAG, line)
+        diag(line)
     }
 
     /**
@@ -386,7 +457,7 @@ class ShortsWatchAccessibilityService : AccessibilityService() {
             columns.add(n to b)
         }
 
-        if (columns.size < 4) return null
+        if (columns.size !in 3..7) return null
         val gaps = (1 until columns.size).map {
             columns[it].second.centerX() - columns[it - 1].second.centerX()
         }
@@ -394,7 +465,9 @@ class ShortsWatchAccessibilityService : AccessibilityService() {
         val evenlySpaced = gaps.all { it > median * 0.5 && it < median * 1.5 }
         if (!evenlySpaced) return null
 
-        val idx = if (columns.size == 5 || columns.size == 4) 1 else return null
+        // Shorts is ALWAYS the 2nd item (Home, Shorts, …) in every YouTube
+        // layout — 5-tab bar, 4-tab, or the newer 3-tab (Home/Shorts/You).
+        val idx = 1
         Log.i(TAG, "tab by geometry: ${columns.size} items, picked #$idx")
         return columns[idx].first
     }
@@ -422,6 +495,7 @@ class ShortsWatchAccessibilityService : AccessibilityService() {
             val shorts = findShortsPlayer(root) ?: return@Runnable
             OverlayService.setInShortsPlayer(true)
             Log.i(TAG, "Shorts open — pressing Back")
+            diag("Shorts open — pressing Back")
             dumpRelevant(root)
             performGlobalAction(GLOBAL_ACTION_BACK)
             lastExitAt = now
@@ -440,6 +514,7 @@ class ShortsWatchAccessibilityService : AccessibilityService() {
                         } else {
                             OverlayService.setInShortsPlayer(false)
                             Log.i(TAG, "Out of Shorts")
+                            diag("out of Shorts")
                         }
                     } catch (e: Exception) {
                         Log.w(TAG, "exit re-check error: ${e.message}")

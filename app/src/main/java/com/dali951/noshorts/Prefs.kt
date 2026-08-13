@@ -47,6 +47,20 @@ object Prefs {
         get() = sp.getFloat("box_shift", 0f)
         set(v) = sp.edit().putFloat("box_shift", v).apply()
 
+    /**
+     * Horizontal position of the Shorts tab as a % of screen width.
+     * Used ONLY as fallback when the tab can't be detected in the
+     * accessibility tree (5-tab bar = 30%, 3-tab bar = 50%).
+     */
+    var tabPosPct: Float
+        get() = sp.getFloat("tab_pos", 30f)
+        set(v) = sp.edit().putFloat("tab_pos", v).apply()
+
+    /** Rolling on-device diagnostics log (latest ~80 lines). */
+    var diagLog: String
+        get() = sp.getString("diag_log", "") ?: ""
+        set(v) = sp.edit().putString("diag_log", v).apply()
+
     var adaptiveEnabled: Boolean
         get() = sp.getBoolean("adaptive_enabled", true)
         set(v) = sp.edit().putBoolean("adaptive_enabled", v).apply()

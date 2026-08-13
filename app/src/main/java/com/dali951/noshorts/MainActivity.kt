@@ -3,6 +3,8 @@ package com.dali951.noshorts
 import android.app.AlertDialog
 import android.app.DownloadManager
 import android.content.BroadcastReceiver
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -69,6 +71,7 @@ class MainActivity : AppCompatActivity() {
         val sbHeight = findViewById<SeekBar>(R.id.sbHeight)
         val sbBottom = findViewById<SeekBar>(R.id.sbBottom)
         val sbShift = findViewById<SeekBar>(R.id.sbShift)
+        val sbTabPos = findViewById<SeekBar>(R.id.sbTabPos)
         btnPreview = findViewById(R.id.btnPreview)
         dlBanner = findViewById(R.id.dlBanner)
         dlProgress = findViewById(R.id.dlProgress)
@@ -85,6 +88,7 @@ class MainActivity : AppCompatActivity() {
         sbHeight.progress = Prefs.boxHeightDp.toInt().coerceIn(0, 140)
         sbBottom.progress = Prefs.bottomOffsetDp.toInt().coerceIn(0, 60)
         sbShift.progress = (Prefs.xShiftDp.toInt() + 120).coerceIn(0, 240)
+        sbTabPos.progress = Prefs.tabPosPct.toInt().coerceIn(10, 90)
         updateSliderLabels()
 
         // ---- chips ----
@@ -125,6 +129,7 @@ class MainActivity : AppCompatActivity() {
         sbHeight.setOnSeekBarChangeListener(simpleSeek { Prefs.boxHeightDp = it.toFloat(); updateSliderLabels(); refreshBox() })
         sbBottom.setOnSeekBarChangeListener(simpleSeek { Prefs.bottomOffsetDp = it.toFloat(); updateSliderLabels(); refreshBox() })
         sbShift.setOnSeekBarChangeListener(simpleSeek { Prefs.xShiftDp = (it - 120).toFloat(); updateSliderLabels(); refreshBox() })
+        sbTabPos.setOnSeekBarChangeListener(simpleSeek { Prefs.tabPosPct = it.toFloat(); updateSliderLabels(); refreshBox() })
 
         btnPreview.setOnClickListener {
             if (previewActive) {
@@ -175,6 +180,7 @@ class MainActivity : AppCompatActivity() {
         findViewById<TextView>(R.id.btnCapture).setOnClickListener {
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
         }
+        findViewById<TextView>(R.id.btnDiag).setOnClickListener { showDiagnostics() }
 
         // ---- update card ----
         txtVersion.text = "Version ${BuildConfig.VERSION_NAME}"
@@ -342,6 +348,40 @@ class MainActivity : AppCompatActivity() {
         findViewById<TextView>(R.id.lblHeight).text = "${Prefs.boxHeightDp.toInt()} dp"
         findViewById<TextView>(R.id.lblBottom).text = "${Prefs.bottomOffsetDp.toInt()} dp"
         findViewById<TextView>(R.id.lblShift).text = "${Prefs.xShiftDp.toInt()} dp"
+        findViewById<TextView>(R.id.lblTabPos).text = "${Prefs.tabPosPct.toInt()}%"
+    }
+
+    /**
+     * On-screen diagnostics: the a11y service keeps a rolling log of what it
+     * sees (foreground app, tab found/estimated, box state, exits). Copy it
+     * and paste it in chat when something doesn't work.
+     */
+    private fun showDiagnostics() {
+        val status = buildString {
+            append("Status:\n")
+            append(if (Settings.canDrawOverlays(this@MainActivity)) "  overlay perm: OK\n" else "  overlay perm: NEEDED\n")
+            append(if (isAccessibilityEnabled()) "  a11y service: ON\n" else "  a11y service: OFF\n")
+            append(if (isBatteryExempt()) "  battery: exempt\n" else "  battery: not exempt\n")
+            append("  overlay svc running: ").append(OverlayService.isRunning).append("\n")
+            append("  box visible: ").append(OverlayService.boxVisible).append("\n\n")
+        }
+        val log = ShortsWatchAccessibilityService.getDiag()
+        val body = status + (if (log.isBlank()) "(no diagnostics logged yet — open YouTube, wait ~10s, come back)" else log)
+        AlertDialog.Builder(this)
+            .setTitle("Diagnostics")
+            .setMessage(body)
+            .setPositiveButton("Copy") { _, _ ->
+                (getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).let { cm ->
+                    cm.setPrimaryClip(ClipData.newPlainText("noshorts-diag", body))
+                }
+                Toast.makeText(this, "Copied — paste it in chat", Toast.LENGTH_SHORT).show()
+            }
+            .setNeutralButton("Clear") { _, _ ->
+                Prefs.diagLog = ""
+                showDiagnostics()
+            }
+            .setNegativeButton("Close", null)
+            .show()
     }
 
     private fun selectChipForColor(color: Int) {
