@@ -50,7 +50,7 @@ class ShortsWatchAccessibilityService : AccessibilityService() {
         private const val TAG = "ShortsWatch"
         private const val YT_PACKAGE = "com.google.android.youtube"
         private const val COOLDOWN_MS = 2 * 60 * 1000L
-        private const val EXIT_COOLDOWN_MS = 15 * 1000L
+        private const val EXIT_COOLDOWN_MS = 5 * 1000L
         private const val MAX_EXIT_BACKS = 3
         private const val TAB_POLL_MS = 250L
 
@@ -85,6 +85,7 @@ class ShortsWatchAccessibilityService : AccessibilityService() {
     private var lastOverlayRestartAt = 0L
     private var lastNodeFoundAt = 0L
     private var ytSince = 0L
+    private var wasBoxVisible = false
     private val diag = ArrayDeque<String>()
 
     /** Timestamped diagnostic line, kept in a ring buffer + persisted. */
@@ -203,6 +204,18 @@ class ShortsWatchAccessibilityService : AccessibilityService() {
                             OverlayService.setInShortsPlayer(true)
                             runExitSequence(root)
                         } else {
+                            // Player no longer detected. The poll is the source
+                            // of truth for this flag — release it HERE so the
+                            // box comes back no matter how Shorts was left
+                            // (auto-Back, swipe, back gesture, …). Before
+                            // v1.3.6 a throttled runExitSequence skipped its
+                            // late release and the flag could stick forever,
+                            // killing the box for the whole session.
+                            if (OverlayService.inShortsPlayer) {
+                                OverlayService.setInShortsPlayer(false)
+                                Log.i(TAG, "player left — flag released by poll")
+                                diag("player flag released (back on feed)")
+                            }
                             found = findShortsTab(root)
                             rect = if (found != null) {
                                 lastNodeFoundAt = now
@@ -316,7 +329,14 @@ class ShortsWatchAccessibilityService : AccessibilityService() {
 
     /** Throttled (~1.5s) screenshot sampler; feeds OverlayService. */
     private fun maybeSampleColor() {
-        if (!Prefs.adaptiveEnabled || !OverlayService.boxVisible) return
+        if (!Prefs.adaptiveEnabled || !OverlayService.boxVisible) {
+            wasBoxVisible = false
+            return
+        }
+        // Box just appeared — sample right away so the first box already
+        // matches the bar instead of showing the default color for 1.5s.
+        if (!wasBoxVisible) lastSampleAt = 0
+        wasBoxVisible = true
         // takeScreenshot(displayId, …) with ScreenshotResult.getHardwareBuffer()
         // is the only path on Android 16 (getBitmap / the old overload are gone).
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) return
@@ -356,15 +376,21 @@ class ShortsWatchAccessibilityService : AccessibilityService() {
                 val d = resources.displayMetrics.density
                 val bottomOff = (Prefs.bottomOffsetDp * d).toInt()
                 val boxH = (Prefs.boxHeightDp * d).toInt()
-                val y = (OverlayService.boxCenterY ?: (h - bottomOff - boxH / 2)).coerceIn(0, h - 1)
-                val samples = arrayListOf<Int>()
-                // Same band as the box, but in the GAPS between the bottom-nav
-                // icons (15/42/65/85% width) where the bar is plain background.
-                for (fx in floatArrayOf(0.15f, 0.42f, 0.65f, 0.85f)) {
+                val centerY = (OverlayService.boxCenterY ?: (h - bottomOff - boxH / 2)).coerceIn(0, h - 1)
+                // 5 rows across the box band × 4 x-positions in the GAPS between
+                // the bottom-nav icons (15/42/65/85% width) where the bar is
+                // plain background. The pill may be thinner or offset from the
+                // box center — sampling one row alone could hit the gap above
+                // or below it (black) and turn the box the wrong color. The
+                // per-column vertical median keeps whichever rows cross the
+                // pill; the median of the 4 columns is the bar color.
+                val rows = floatArrayOf(-0.4f, -0.2f, 0f, 0.2f, 0.4f)
+                    .map { (centerY + (boxH * it / 2).toInt()).coerceIn(0, h - 1) }
+                val cols = floatArrayOf(0.15f, 0.42f, 0.65f, 0.85f).map { fx ->
                     val x = (w * fx).toInt().coerceIn(0, w - 1)
-                    samples.add(bmp.getPixel(x, y))
+                    median(rows.map { bmp.getPixel(x, it) })
                 }
-                val avg = median(samples)
+                val avg = median(cols)
                 val prev = lastSample ?: avg
                 lastSample = blend(prev, avg, 0.45f)
                 OverlayService.setAdaptiveColor(lastSample)
@@ -590,14 +616,9 @@ class ShortsWatchAccessibilityService : AccessibilityService() {
                 }
             }, 800L * round)
         }
-        // Always release the player flag when the sequence ends — a match
-        // that survives MAX backs is likely a false positive (e.g. the
-        // feed's Shorts shelf), and suppressing the box forever would be
-        // worse than one extra back. Re-detection re-suppresses instantly.
-        handler.postDelayed({
-            OverlayService.setInShortsPlayer(false)
-            Log.i(TAG, "exit sequence done — player flag released")
-        }, 800L * MAX_EXIT_BACKS)
+        // NOTE: no forced "release after 2.4s" here anymore — the tab poll
+        // releases the player flag the moment the player stops being detected,
+        // so the box returns immediately after leaving Shorts (see poll above).
     }
 
     /**

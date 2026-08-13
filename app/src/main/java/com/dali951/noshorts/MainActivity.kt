@@ -19,13 +19,18 @@ import android.view.View
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ProgressBar
+import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import com.google.android.material.chip.Chip
 import com.google.android.material.switchmaterial.SwitchMaterial
+import java.net.HttpURLConnection
+import java.net.URL
+import java.net.URLEncoder
 import java.util.Locale
+import org.json.JSONObject
 
 class MainActivity : AppCompatActivity() {
 
@@ -368,12 +373,12 @@ class MainActivity : AppCompatActivity() {
 
     /**
      * On-screen diagnostics: the a11y service keeps a rolling log of what it
-     * sees (foreground app, tab found/estimated, box state, exits). Copy it
-     * and paste it in chat when something doesn't work.
+     * sees (foreground app, tab found/estimated, box state, exits). Copy it,
+     * or Upload it straight to the debug server and paste the link in chat.
      */
     private fun showDiagnostics() {
         val status = buildString {
-            append("Status:\n")
+            append("Version: ").append(BuildConfig.VERSION_NAME).append("\n")
             append(if (Settings.canDrawOverlays(this@MainActivity)) "  overlay perm: OK\n" else "  overlay perm: NEEDED\n")
             append(if (isAccessibilityEnabled()) "  a11y service: ON\n" else "  a11y service: OFF\n")
             append(if (isBatteryExempt()) "  battery: exempt\n" else "  battery: not exempt\n")
@@ -382,21 +387,87 @@ class MainActivity : AppCompatActivity() {
         }
         val log = ShortsWatchAccessibilityService.getDiag()
         val body = status + (if (log.isBlank()) "(no diagnostics logged yet — open YouTube, wait ~10s, come back)" else log)
-        AlertDialog.Builder(this)
-            .setTitle("Diagnostics")
-            .setMessage(body)
-            .setPositiveButton("Copy") { _, _ ->
+
+        val tv = TextView(this).apply {
+            text = body
+            textSize = 12f
+            setTextIsSelectable(true)
+            setPadding(24, 16, 24, 16)
+        }
+        val scroll = ScrollView(this).apply { addView(tv) }
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(scroll, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+        }
+        val dialog = AlertDialog.Builder(this).setTitle("Diagnostics").setView(root).create()
+
+        fun makeButton(label: String, onClick: () -> Unit) = Button(this).apply {
+            text = label
+            setOnClickListener { onClick() }
+        }
+
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            addView(makeButton("Copy") {
                 (getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).let { cm ->
                     cm.setPrimaryClip(ClipData.newPlainText("noshorts-diag", body))
                 }
-                Toast.makeText(this, "Copied — paste it in chat", Toast.LENGTH_SHORT).show()
-            }
-            .setNeutralButton("Clear") { _, _ ->
+                Toast.makeText(this@MainActivity, "Copied", Toast.LENGTH_SHORT).show()
+            })
+            addView(makeButton("Upload") { uploadDiag(body) })
+            addView(makeButton("Clear") {
+                dialog.dismiss()
                 Prefs.diagLog = ""
                 showDiagnostics()
+            })
+            addView(makeButton("Close") { dialog.dismiss() })
+        }
+        root.addView(row)
+        dialog.show()
+    }
+
+    /**
+     * POSTs the diagnostics text to the debug server (modali.powerpme.com),
+     * which stores it and returns a public URL — paste that link in chat.
+     */
+    private fun uploadDiag(body: String) {
+        Toast.makeText(this, "Uploading…", Toast.LENGTH_SHORT).show()
+        Thread {
+            var link = ""
+            var error = ""
+            try {
+                val conn = URL("https://modali.powerpme.com/noshorts/upload.php").openConnection() as HttpURLConnection
+                conn.requestMethod = "POST"
+                conn.doOutput = true
+                conn.connectTimeout = 10000
+                conn.readTimeout = 10000
+                val params =
+                    "key=" + URLEncoder.encode("dali951-noshorts", "UTF-8") +
+                        "&log=" + URLEncoder.encode(body, "UTF-8")
+                conn.outputStream.use { it.write(params.toByteArray(Charsets.UTF_8)) }
+                val resp = conn.inputStream.bufferedReader().readText()
+                conn.disconnect()
+                link = JSONObject(resp).optString("url")
+                if (link.isEmpty()) error = "server: ${resp.take(120)}"
+            } catch (e: Exception) {
+                error = e.message ?: "unknown error"
             }
-            .setNegativeButton("Close", null)
-            .show()
+            handler.post {
+                if (link.isNotEmpty()) {
+                    AlertDialog.Builder(this)
+                        .setTitle("Debug uploaded")
+                        .setMessage("Your log is live — send this link in chat:\n\n$link")
+                        .setPositiveButton("Copy") { _, _ ->
+                            (getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager)
+                                .setPrimaryClip(ClipData.newPlainText("noshorts-diag-link", link))
+                        }
+                        .setNegativeButton("Close", null)
+                        .show()
+                } else {
+                    Toast.makeText(this, "Upload failed: $error", Toast.LENGTH_LONG).show()
+                }
+            }
+        }.start()
     }
 
     private fun selectChipForColor(color: Int) {
